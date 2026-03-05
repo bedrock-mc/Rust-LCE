@@ -1,8 +1,8 @@
 # LCEMP Rust Port Progress Tracker
 
 Last updated: 2026-03-04
-Current phase: M4.5 Gameplay UI parity completion (resumed)
-Current step: M4.5.5 Creative inventory UI parity baseline
+Current phase: GP.3 parity debt backlog closure (resumed)
+Current step: GP.3 parity debt - chunk mesh/update parity and save-flush stabilization
 Engine decision: Bevy for client/runtime integration on Windows
 
 ## Tracking Rules
@@ -160,7 +160,7 @@ Engine decision: Bevy for client/runtime integration on Windows
         - Files: `src/bin/bevy_client.rs`, `src/client/terrain_meshing.rs`
         - Integration tests: `tests/client_chunk_streaming_integration.rs`, `tests/client_lifecycle_hooks_integration.rs`, `tests/terrain_meshing_integration.rs`, `tests/fluids_lifecycle_integration.rs`
         - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_chunk_streaming_integration`, `cargo test --test client_lifecycle_hooks_integration`, `cargo test --test terrain_meshing_integration`, and `cargo test --test fluids_lifecycle_integration` passed.
-    - [ ] GP.3 parity debt backlog (deferred while M4.5 UI parity is active)
+    - [ ] GP.3 parity debt backlog (in progress; resumed while M4.5.5 remains open)
       - [ ] Replace temporary chunk mesh rebuild budget/queue throttles with a C++ parity-accurate render/update path (remove reliance on `LCE_MESH_REBUILD_BUDGET` for baseline playability).
       - [ ] Revisit fluid render ordering/parity path against original client render layers to remove remaining chunk-water hitch edge cases without non-parity throttles.
       - [ ] Normalize tracker/docs notes with runtime defaults after parity debt close (fluid pass wording + `CHUNK_LOAD_RADIUS` note alignment).
@@ -388,3 +388,9 @@ Engine decision: Bevy for client/runtime integration on Windows
 - 2026-03-04: M4.5.5 creative/control parity follow-up: aligned creative selector entries with remaining `IUIScene_CreativeMenu` static lists (added missing transport/redstone/tools/misc entries, expanded spawn eggs, and encoded max-level enchanted-book variants under aux scaffolding), added item icon atlas mappings for the newly surfaced IDs, and restored survival mouse-wheel hotbar cycling with wraparound selection.
 - 2026-03-04: M4.5.5 sword/outline/creative-drag follow-up: aligned sword handling with legacy use semantics by preventing sword-based block destruction attempts while preserving hit feedback and adding right-click defend pose transforms, restored black block-hit outline rendering in gameplay view, and added interactive inventory slot drag handling in creative player-inventory view including hotbar-to-inventory disposal flow.
 - 2026-03-04: M4.5.5 survival HUD parity follow-up: added C++-anchored hunger and XP HUD rendering in gameplay (`Gui.cpp` icon UV rows + XP bar strips), expanded player runtime state with food/XP fields, and wired Bevy HUD sync to show health/hunger/XP rows in survival while preserving overlay visibility gating.
+- 2026-03-04: GP.3 parity debt backlog resumed: replaced chunk-mesh full-entity respawn churn with persistent per-chunk mesh handle updates, added deferred world/chunk save flushing to decouple persistence from interaction hot paths, and hardened lifecycle/worker queue bookkeeping for scheduled ticks + cancelled chunk requests; integration coverage expanded in `tests/world_lifecycle_integration.rs`, `tests/client_world_worker_integration.rs`, `tests/block_chunk_view_integration.rs`, and `tests/crafting_item_use_integration.rs`.
+- 2026-03-04: GP.3 mesh-update parity follow-up: removed queued mesh rebuild throttling from runtime streaming (no `LCE_MESH_REBUILD_BUDGET` gating), switched chunk-window updates to rebuild the full affected loaded chunk set each frame (loaded chunk + neighbors for load/unload transitions), and kept rebuild diagnostics via `LCE_MESH_REBUILD_WARN_MS`/`LCE_WATER_DEBUG`; validated with `cargo test --features bevy_client --tests`.
+- 2026-03-04: Streaming perf follow-up (16-chunk-radius tuning): raised default chunk load radius to `16` with env override (`LCE_CHUNK_LOAD_RADIUS`), and reintroduced deferred neighbor mesh-rebuild draining (`LCE_DEFERRED_MESH_REBUILDS_PER_FRAME`) while keeping immediate rebuilds for newly loaded chunks to reduce chunk-stream hitch spikes; validated with `cargo check --features bevy_client --bin bevy_client`, targeted chunk/meshing integration tests, and full `cargo test --features bevy_client --tests`.
+- 2026-03-05: Streaming stability follow-up (GPU memory pressure): added independent mesh-radius tuning (`LCE_CHUNK_MESH_RADIUS`) so chunk-data load radius can stay high while far chunk meshes are despawned, queued only mesh-visible chunks for rebuild, and compacted terrain index buffers to `u16` when possible to reduce GPU buffer allocation pressure tied to `wgpu` out-of-memory spikes.
+- 2026-03-05: Streaming timeout follow-up (swapchain acquire stalls): added guaranteed near-player visible mesh backfill under `LCE_DEFERRED_MESH_REBUILDS_PER_FRAME=0`, aligned sprint continuation/activation rules for flying keyboard movement with `LocalPlayer::aiStep` semantics, and added a total per-frame mesh rebuild budget (`LCE_MAX_MESH_REBUILDS_PER_FRAME`, default `1`) plus conservative default mesh radius (`8`, temporary cap `10`) to reduce GPU saturation and `bevy_render` acquire timeouts.
+- 2026-03-05: Save/fall camera stabilization follow-up: when unpausing gameplay, camera interpolation state is now snapped to the current player position to avoid stale previous/current render-state drift after pause/save operations (reported first-person shake after saving mid-fall).

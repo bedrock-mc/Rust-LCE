@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
@@ -32,7 +32,7 @@ enum WorldWorkerCommand {
 pub struct WorldWorker {
     request_tx: Sender<WorldWorkerCommand>,
     result_rx: Receiver<GeneratedChunk>,
-    pending_chunks: BTreeSet<ChunkPos>,
+    pending_chunks: HashSet<ChunkPos>,
     ready_chunks: VecDeque<GeneratedChunk>,
     thread_handle: Option<JoinHandle<()>>,
 }
@@ -58,7 +58,7 @@ impl WorldWorker {
         Self {
             request_tx,
             result_rx,
-            pending_chunks: BTreeSet::new(),
+            pending_chunks: HashSet::new(),
             ready_chunks: VecDeque::new(),
             thread_handle: Some(thread_handle),
         }
@@ -149,13 +149,14 @@ fn run_worker_loop(
     result_tx: Sender<GeneratedChunk>,
 ) {
     let generator = RandomLevelSource::new(world_seed);
-    let mut requested_chunks = BTreeSet::new();
+    let mut requested_chunks = HashSet::new();
+    let mut request_queue = VecDeque::new();
 
     loop {
         if requested_chunks.is_empty() {
             match request_rx.recv() {
                 Ok(command) => {
-                    if apply_worker_command(command, &mut requested_chunks) {
+                    if apply_worker_command(command, &mut requested_chunks, &mut request_queue) {
                         break;
                     }
                 }
@@ -166,7 +167,7 @@ fn run_worker_loop(
         loop {
             match request_rx.try_recv() {
                 Ok(command) => {
-                    if apply_worker_command(command, &mut requested_chunks) {
+                    if apply_worker_command(command, &mut requested_chunks, &mut request_queue) {
                         return;
                     }
                 }
@@ -175,10 +176,9 @@ fn run_worker_loop(
             }
         }
 
-        let Some(chunk) = requested_chunks.iter().next().copied() else {
+        let Some(chunk) = next_requested_chunk(&mut requested_chunks, &mut request_queue) else {
             continue;
         };
-        requested_chunks.remove(&chunk);
 
         let generated = load_or_generate_chunk(&generator, save_root.as_deref(), chunk);
         if result_tx.send(generated).is_err() {
@@ -213,11 +213,14 @@ fn load_or_generate_chunk(
 
 fn apply_worker_command(
     command: WorldWorkerCommand,
-    requested_chunks: &mut BTreeSet<ChunkPos>,
+    requested_chunks: &mut HashSet<ChunkPos>,
+    request_queue: &mut VecDeque<ChunkPos>,
 ) -> bool {
     match command {
         WorldWorkerCommand::RequestChunk { chunk } => {
-            requested_chunks.insert(chunk);
+            if requested_chunks.insert(chunk) {
+                request_queue.push_back(chunk);
+            }
             false
         }
         WorldWorkerCommand::CancelChunk { chunk } => {
@@ -226,4 +229,17 @@ fn apply_worker_command(
         }
         WorldWorkerCommand::Shutdown => true,
     }
+}
+
+fn next_requested_chunk(
+    requested_chunks: &mut HashSet<ChunkPos>,
+    request_queue: &mut VecDeque<ChunkPos>,
+) -> Option<ChunkPos> {
+    while let Some(chunk) = request_queue.pop_front() {
+        if requested_chunks.remove(&chunk) {
+            return Some(chunk);
+        }
+    }
+
+    None
 }

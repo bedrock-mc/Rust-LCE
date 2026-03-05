@@ -1,4 +1,4 @@
-use crate::world::{PlayerInventory, RECIPES, craft_recipe};
+use crate::world::{PlayerInventory, RECIPES, can_craft_recipe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CraftingRecipeUiState {
@@ -11,16 +11,11 @@ pub struct CraftingRecipeUiState {
 pub fn collect_crafting_recipe_state(inventory: &PlayerInventory) -> Vec<CraftingRecipeUiState> {
     RECIPES
         .iter()
-        .map(|recipe| {
-            let mut trial_inventory = inventory.clone();
-            let outcome = craft_recipe(&mut trial_inventory, recipe.id, 1);
-
-            CraftingRecipeUiState {
-                recipe_id: recipe.id,
-                output_item_id: recipe.output_item_id,
-                output_count: recipe.output_count,
-                craftable: outcome.crafted_times > 0,
-            }
+        .map(|recipe| CraftingRecipeUiState {
+            recipe_id: recipe.id,
+            output_item_id: recipe.output_item_id,
+            output_count: recipe.output_count,
+            craftable: can_craft_recipe(inventory, recipe.id, 1),
         })
         .collect()
 }

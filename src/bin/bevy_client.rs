@@ -47,7 +47,7 @@ use lce_rust::client::hotbar_ui::collect_hotbar_state;
 use lce_rust::client::interaction::{
     BlockAction, BlockRaycastHit, INTERACTION_DISTANCE_BLOCKS, apply_block_action,
     forward_vector_from_yaw_pitch, movement_axes_from_yaw, placement_intersects_player_collider,
-    raycast_first_non_air_block, raycast_first_solid_block, target_chunk_for_block,
+    raycast_first_non_air_block, raycast_first_solid_block,
 };
 use lce_rust::client::inventory_ui::collect_inventory_state;
 use lce_rust::client::lifecycle_hooks::{
@@ -65,9 +65,9 @@ use lce_rust::world::{
     BlockPos, BlockWorld, ChunkLifecycleController, ChunkPos, DAY_LENGTH_TICKS, HOTBAR_SLOTS,
     INVENTORY_SLOTS, ItemStack, LAVA_SOURCE_BLOCK_ID, LEVER_BLOCK_ID, MovementInput,
     OfflineGameSession, RECIPES, REDSTONE_TORCH_OFF_BLOCK_ID, REDSTONE_TORCH_ON_BLOCK_ID,
-    ScheduledTick, WALK_SPEED_BLOCKS_PER_SECOND, WATER_FLOWING_BLOCK_ID, WATER_SOURCE_BLOCK_ID,
-    WeatherKind, WorldSession, block_id_for_item, craft_recipe, fluid_ticks_for_block_change,
-    is_fluid_block, is_solid_block_for_player_collision, process_scheduled_fluid_tick,
+    ScheduledTick, WATER_FLOWING_BLOCK_ID, WATER_SOURCE_BLOCK_ID, WeatherKind, WorldSession,
+    block_id_for_item, craft_recipe, fluid_ticks_for_block_change, is_fluid_block,
+    is_solid_block_for_player_collision, process_scheduled_fluid_tick,
     process_scheduled_redstone_tick, recipe_by_id, redstone_ticks_for_block_change,
 };
 
@@ -76,10 +76,15 @@ const CAMERA_EYE_HEIGHT: f32 = 1.62;
 const DEFAULT_FOV_DEGREES: f32 = 110.0;
 const LOOK_SENSITIVITY_RADIANS_PER_PIXEL: f32 = 0.003;
 const MAX_PITCH_RADIANS: f32 = 1.45;
-const CHUNK_LOAD_RADIUS: i32 = 2;
+const DEFAULT_CHUNK_LOAD_RADIUS: i32 = 16;
+const DEFAULT_CHUNK_MESH_RADIUS: i32 = 8;
+const MAX_CHUNK_MESH_RADIUS: i32 = 10;
 const MAX_PENDING_CHUNK_REQUESTS: usize = 4;
 const MAX_CHUNK_REQUESTS_PER_FRAME: usize = 2;
 const MAX_GENERATED_CHUNKS_APPLIED_PER_FRAME: usize = 1;
+const MAX_VISIBLE_MESH_BACKFILL_PER_FRAME: usize = 1;
+const MAX_DEFERRED_MESH_REBUILDS_PER_FRAME: usize = 2;
+const MAX_MESH_REBUILDS_PER_FRAME: usize = 1;
 const HOTBAR_GUI_SCALE: f32 = 2.0;
 const INVENTORY_GUI_SCALE: f32 = 3.0;
 const LEGACY_MENU_GUI_SCALE: f32 = 2.0;
@@ -118,6 +123,8 @@ const BREAK_PARTICLE_SCALE_MULTIPLIER: f32 = 0.2;
 const BLOCK_HIT_PARTICLE_COUNT: usize = 8;
 const BLOCK_BREAK_HIT_SOUND_SWING_INTERVAL: u8 = 4;
 const BLOCK_BREAK_COOLDOWN_SWINGS: u8 = 5;
+const WORLD_SAVE_FLUSH_INTERVAL_SECONDS: f32 = 0.5;
+const WORLD_SAVE_CHUNK_BUDGET_PER_FLUSH: usize = 1;
 const ITEM_IN_HAND_SWING_DURATION_TICKS: i32 = 6;
 const ITEM_IN_HAND_MAX_HEIGHT_DELTA: f32 = 0.4;
 const ITEM_IN_HAND_SWING_POW_FACTOR: f32 = 4.0;
@@ -353,13 +360,14 @@ struct UiItemMeshCache {
     by_item_icon_key: HashMap<(u16, u16), Handle<Mesh>>,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct RuntimeAudio {
+    asset_server: AssetServer,
     click_sfx: Option<Handle<AudioSource>>,
     back_sfx: Option<Handle<AudioSource>>,
     pop_sfx: Option<Handle<AudioSource>>,
     wood_click_sfx: Option<Handle<AudioSource>>,
-    legacy_event_sfx: HashMap<String, Vec<Handle<AudioSource>>>,
+    legacy_event_sfx: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,13 +453,36 @@ struct UiIconAtlasHandles {
 }
 
 #[derive(Resource, Default)]
-struct SpawnedChunkMeshes(HashMap<ChunkPos, Entity>);
+struct SpawnedChunkMeshes(HashMap<ChunkPos, ChunkMeshRenderEntry>);
+
+#[derive(Debug)]
+struct ChunkMeshRenderEntry {
+    root: Entity,
+    opaque_entity: Entity,
+    fluid_entity: Entity,
+    opaque_mesh: Handle<Mesh>,
+    fluid_mesh: Handle<Mesh>,
+}
 
 #[derive(Resource, Default)]
 struct LoadedChunks(BTreeSet<ChunkPos>);
 
 #[derive(Resource, Default)]
 struct PendingChunkMeshRebuilds(BTreeSet<ChunkPos>);
+
+#[derive(Resource, Default)]
+struct PendingWorldSaves {
+    dirty_chunks: BTreeSet<ChunkPos>,
+    world_dirty: bool,
+    seconds_since_last_flush: f32,
+}
+
+impl PendingWorldSaves {
+    fn mark_chunk_dirty(&mut self, chunk: ChunkPos) {
+        self.dirty_chunks.insert(chunk);
+        self.world_dirty = true;
+    }
+}
 
 #[derive(Resource, Default)]
 struct CursorCaptureState {
@@ -581,7 +612,6 @@ struct TerrainTextureSamplerState {
 struct PerfDebugConfig {
     enabled: bool,
     water_debug_enabled: bool,
-    mesh_rebuild_budget_per_frame: usize,
     mesh_rebuild_warn_ms: f64,
     log_every_frames: u64,
     warn_threshold_ms: f64,
@@ -592,8 +622,6 @@ impl PerfDebugConfig {
         let enabled = performance_logging_enabled();
         let water_debug_enabled =
             parse_boolean_flag(std::env::var("LCE_WATER_DEBUG").ok().as_deref());
-        let mesh_rebuild_budget_per_frame =
-            usize::try_from(env_u64("LCE_MESH_REBUILD_BUDGET", 1)).unwrap_or(1);
         let mesh_rebuild_warn_ms = env_f64("LCE_MESH_REBUILD_WARN_MS", 6.0).max(0.1);
         let log_every_frames = env_u64("LCE_PERF_LOG_EVERY", 30).max(1);
         let warn_threshold_ms = env_f64("LCE_PERF_WARN_MS", 8.0).max(0.1);
@@ -601,10 +629,48 @@ impl PerfDebugConfig {
         Self {
             enabled,
             water_debug_enabled,
-            mesh_rebuild_budget_per_frame,
             mesh_rebuild_warn_ms,
             log_every_frames,
             warn_threshold_ms,
+        }
+    }
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+struct StreamingConfig {
+    chunk_load_radius: i32,
+    chunk_mesh_radius: i32,
+    deferred_mesh_rebuilds_per_frame: usize,
+    mesh_rebuilds_per_frame_budget: usize,
+}
+
+impl StreamingConfig {
+    fn from_env() -> Self {
+        let chunk_load_radius = env_i32("LCE_CHUNK_LOAD_RADIUS", DEFAULT_CHUNK_LOAD_RADIUS)
+            .clamp(1, DEFAULT_CHUNK_LOAD_RADIUS);
+        let max_mesh_radius = chunk_load_radius.min(MAX_CHUNK_MESH_RADIUS);
+        let chunk_mesh_radius = env_i32(
+            "LCE_CHUNK_MESH_RADIUS",
+            DEFAULT_CHUNK_MESH_RADIUS.min(max_mesh_radius),
+        )
+        .clamp(1, max_mesh_radius);
+        let deferred_mesh_rebuilds_per_frame = usize::try_from(env_u64(
+            "LCE_DEFERRED_MESH_REBUILDS_PER_FRAME",
+            MAX_DEFERRED_MESH_REBUILDS_PER_FRAME as u64,
+        ))
+        .unwrap_or(MAX_DEFERRED_MESH_REBUILDS_PER_FRAME);
+        let mesh_rebuilds_per_frame_budget = usize::try_from(env_u64(
+            "LCE_MAX_MESH_REBUILDS_PER_FRAME",
+            MAX_MESH_REBUILDS_PER_FRAME as u64,
+        ))
+        .unwrap_or(MAX_MESH_REBUILDS_PER_FRAME)
+        .max(1);
+
+        Self {
+            chunk_load_radius,
+            chunk_mesh_radius,
+            deferred_mesh_rebuilds_per_frame,
+            mesh_rebuilds_per_frame_budget,
         }
     }
 }
@@ -705,7 +771,7 @@ struct ChunkWindowPerfStats {
     meshes_rebuilt: usize,
     chunk_requests: usize,
     pending_async: usize,
-    pending_mesh_rebuilds: usize,
+    mesh_rebuild_candidates: usize,
     desired_loads: usize,
     deferred_loads: usize,
 }
@@ -969,12 +1035,19 @@ struct BlockBreakOverlay;
 #[derive(Component)]
 struct CloudLayer;
 
+#[derive(Component, Default)]
+struct CloudLayerUvState {
+    u_offset: f32,
+    v_offset: f32,
+}
+
 fn main() {
     let (game_state, save_root) = create_initial_state();
     let initial_player_position = game_state.session.player().position;
     println!("Using save root: {}", save_root.0.display());
     let world_seed = game_state.session.world().seed;
     let perf_debug_config = PerfDebugConfig::from_env();
+    let streaming_config = StreamingConfig::from_env();
     let present_mode = default_present_mode();
 
     let world_generation_worker = WorldGenerationWorker {
@@ -1120,8 +1193,24 @@ fn main() {
     }
 
     println!(
-        "Chunk mesh rebuild budget per frame: {} (mesh warn {:.2}ms)",
-        perf_debug_config.mesh_rebuild_budget_per_frame, perf_debug_config.mesh_rebuild_warn_ms
+        "Chunk mesh rebuild warning threshold: {:.2}ms",
+        perf_debug_config.mesh_rebuild_warn_ms
+    );
+    println!(
+        "Chunk load radius: {} (set LCE_CHUNK_LOAD_RADIUS to adjust)",
+        streaming_config.chunk_load_radius
+    );
+    println!(
+        "Chunk mesh radius: {} (set LCE_CHUNK_MESH_RADIUS to adjust)",
+        streaming_config.chunk_mesh_radius
+    );
+    println!(
+        "Deferred neighbor mesh rebuilds per frame: {}",
+        streaming_config.deferred_mesh_rebuilds_per_frame
+    );
+    println!(
+        "Total mesh rebuild budget per frame: {}",
+        streaming_config.mesh_rebuilds_per_frame_budget
     );
 
     if perf_debug_config.water_debug_enabled {
@@ -1151,6 +1240,7 @@ fn main() {
         })
         .insert_resource(TerrainTextureSamplerState::default())
         .insert_resource(perf_debug_config)
+        .insert_resource(streaming_config)
         .insert_resource(PerfDebugState::default())
         .insert_non_send_resource(world_generation_worker)
         .insert_resource(runtime_lifecycle)
@@ -1159,6 +1249,7 @@ fn main() {
         .insert_resource(SpawnedChunkMeshes::default())
         .insert_resource(LoadedChunks::default())
         .insert_resource(PendingChunkMeshRebuilds::default())
+        .insert_resource(PendingWorldSaves::default())
         .insert_resource(UiItemMeshCache::default())
         .insert_resource(ItemInHandAnimationState::default())
         .insert_resource(LookState::default())
@@ -1241,6 +1332,7 @@ fn main() {
                 sync_chat_ui,
                 apply_terrain_texture_sampler,
                 apply_lifecycle_runtime_hooks,
+                flush_pending_world_saves,
                 persist_on_exit,
             )
                 .chain(),
@@ -1389,11 +1481,11 @@ fn setup_scene(
 
     spawn_ui_item_models(&mut commands, &mut meshes, &ui_item_assets);
 
-    let legacy_event_sfx = load_legacy_event_audio_handles(&asset_server, &runtime_assets.0);
+    let legacy_event_sfx = load_legacy_event_audio_paths(&runtime_assets.0);
     if !legacy_event_sfx.is_empty() {
         let variant_count = legacy_event_sfx.values().map(Vec::len).sum::<usize>();
         println!(
-            "Loaded {variant_count} decoded legacy event wav variants across {} event keys.",
+            "Indexed {variant_count} decoded legacy event wav variants across {} event keys.",
             legacy_event_sfx.len()
         );
     }
@@ -1405,6 +1497,7 @@ fn setup_scene(
         items: items_texture,
     });
     commands.insert_resource(RuntimeAudio {
+        asset_server: asset_server.clone(),
         click_sfx: runtime_assets
             .0
             .click_sound_asset_path
@@ -1451,6 +1544,7 @@ fn spawn_cloud_layer(
 
     commands.spawn((
         CloudLayer,
+        CloudLayerUvState::default(),
         Mesh3d(cloud_mesh),
         MeshMaterial3d(cloud_material),
         Transform::default(),
@@ -1835,6 +1929,8 @@ fn handle_pause_menu_toggle(
     inventory_ui: Res<InventoryUiState>,
     chat_input: Res<ChatInputState>,
     mut pause_menu: ResMut<PauseMenuState>,
+    mut player_render_position: ResMut<PlayerRenderPosition>,
+    mut player_walk_animation: ResMut<PlayerWalkAnimationState>,
     mut commands: Commands,
     runtime_audio: Res<RuntimeAudio>,
     mut capture_state: ResMut<CursorCaptureState>,
@@ -1856,6 +1952,11 @@ fn handle_pause_menu_toggle(
         pause_menu.open = false;
         capture_state.captured = capture_cursor(&mut window);
         capture_state.just_captured = capture_state.captured;
+        stabilize_player_render_state(
+            &game,
+            &mut player_render_position,
+            &mut player_walk_animation,
+        );
         play_sound(
             &mut commands,
             runtime_audio
@@ -2101,7 +2202,15 @@ fn sync_cloud_layer(
     game: Res<GameState>,
     player_render_position: Res<PlayerRenderPosition>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut cloud_query: Query<(&mut Transform, &Mesh3d, &mut Visibility), With<CloudLayer>>,
+    mut cloud_query: Query<
+        (
+            &mut Transform,
+            &Mesh3d,
+            &mut Visibility,
+            &mut CloudLayerUvState,
+        ),
+        With<CloudLayer>,
+    >,
 ) {
     let alpha = fixed_time.overstep_fraction().clamp(0.0, 1.0);
     let player = player_render_position
@@ -2118,7 +2227,7 @@ fn sync_cloud_layer(
     );
     let cloud_visible = clouds_visible_for_camera_block(game.blocks.block_id(eye_block));
 
-    for (mut transform, mesh_3d, mut visibility) in &mut cloud_query {
+    for (mut transform, mesh_3d, mut visibility, mut uv_state) in &mut cloud_query {
         transform.translation = Vec3::new(
             player.x - cloud_motion.x_offset_blocks,
             y,
@@ -2133,60 +2242,28 @@ fn sync_cloud_layer(
         let Some(mesh) = meshes.get_mut(&mesh_3d.0) else {
             continue;
         };
-        update_cloud_mesh_uvs(mesh, cloud_motion.u_offset, cloud_motion.v_offset);
+        let delta_u = cloud_motion.u_offset - uv_state.u_offset;
+        let delta_v = cloud_motion.v_offset - uv_state.v_offset;
+        update_cloud_mesh_uvs(mesh, delta_u, delta_v);
+        uv_state.u_offset = cloud_motion.u_offset;
+        uv_state.v_offset = cloud_motion.v_offset;
     }
 }
 
-fn update_cloud_mesh_uvs(mesh: &mut Mesh, u_offset: f32, v_offset: f32) {
-    let Some(VertexAttributeValues::Float32x3(positions)) =
-        mesh.attribute(Mesh::ATTRIBUTE_POSITION).cloned()
-    else {
-        return;
-    };
-
-    let Some(VertexAttributeValues::Float32x3(normals)) =
-        mesh.attribute(Mesh::ATTRIBUTE_NORMAL).cloned()
-    else {
-        return;
-    };
-
-    if positions.len() != normals.len() || positions.len() % 4 != 0 {
+fn update_cloud_mesh_uvs(mesh: &mut Mesh, delta_u: f32, delta_v: f32) {
+    if delta_u.abs() <= f32::EPSILON && delta_v.abs() <= f32::EPSILON {
         return;
     }
 
-    let mut uvs = Vec::with_capacity(positions.len());
-    for quad_start in (0..positions.len()).step_by(4) {
-        let mut center_x = 0.0;
-        let mut center_z = 0.0;
-        for vertex_index in quad_start..(quad_start + 4) {
-            center_x += positions[vertex_index][0];
-            center_z += positions[vertex_index][2];
-        }
-        center_x *= 0.25;
-        center_z *= 0.25;
+    let Some(VertexAttributeValues::Float32x2(mut uvs)) =
+        mesh.remove_attribute(Mesh::ATTRIBUTE_UV_0)
+    else {
+        return;
+    };
 
-        let normal = normals[quad_start];
-        if normal[0] > 0.5 {
-            center_x -= CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
-        } else if normal[0] < -0.5 {
-            center_x += CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
-        }
-
-        if normal[2] > 0.5 {
-            center_z -= CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
-        } else if normal[2] < -0.5 {
-            center_z += CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
-        }
-
-        let texel_x = (center_x / CLOUD_ADVANCED_TEXEL_WORLD_SIZE).floor();
-        let texel_z = (center_z / CLOUD_ADVANCED_TEXEL_WORLD_SIZE).floor();
-        let u = (texel_x + 0.5) * CLOUD_TEXEL_UV_SCALE + u_offset;
-        let v = (texel_z + 0.5) * CLOUD_TEXEL_UV_SCALE + v_offset;
-
-        uvs.push([u, v]);
-        uvs.push([u, v]);
-        uvs.push([u, v]);
-        uvs.push([u, v]);
+    for uv in &mut uvs {
+        uv[0] += delta_u;
+        uv[1] += delta_v;
     }
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
@@ -2254,8 +2331,9 @@ fn update_sprint_from_cxx_rules(
     let running_now = local_forward >= SPRINT_RUN_THRESHOLD;
     let on_ground = session.player().on_ground;
     let flying_now = session.player().allow_flight && session.player().is_flying;
+    let sprint_surface = on_ground || flying_now;
 
-    if on_ground
+    if sprint_surface
         && !session.player().is_sprinting
         && enough_food_to_sprint
         && !sneaking
@@ -2277,7 +2355,7 @@ fn update_sprint_from_cxx_rules(
 
     let keyboard_sprint = sprint_modifier_held
         && local_forward > 0.0
-        && on_ground
+        && sprint_surface
         && enough_food_to_sprint
         && !sneaking
         && !using_item;
@@ -2285,9 +2363,13 @@ fn update_sprint_from_cxx_rules(
         session.set_player_sprinting(true);
     }
 
-    let keep_sprinting = running_now || (flying_now && sprint_modifier_held && local_forward > 0.0);
+    if sneaking {
+        sprint_state.trigger_time = 0;
+    }
+
+    let forward_enough_to_continue_sprint = local_forward > 0.0;
     if session.player().is_sprinting
-        && (!keep_sprinting || !enough_food_to_sprint || sneaking || using_item)
+        && (!forward_enough_to_continue_sprint || !enough_food_to_sprint || sneaking || using_item)
     {
         session.set_player_sprinting(false);
     }
@@ -2299,6 +2381,8 @@ fn sync_chunk_window(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut game: ResMut<GameState>,
+    save_root: Res<SaveRoot>,
+    streaming_config: Res<StreamingConfig>,
     perf_config: Res<PerfDebugConfig>,
     mut perf_state: ResMut<PerfDebugState>,
     mut world_generation_worker: NonSendMut<WorldGenerationWorker>,
@@ -2308,6 +2392,7 @@ fn sync_chunk_window(
     mut spawned_chunk_meshes: ResMut<SpawnedChunkMeshes>,
     mut loaded_chunks: ResMut<LoadedChunks>,
     mut pending_mesh_rebuilds: ResMut<PendingChunkMeshRebuilds>,
+    mut pending_world_saves: ResMut<PendingWorldSaves>,
 ) {
     let frame_start = Instant::now();
     let mut perf_stats = ChunkWindowPerfStats {
@@ -2316,10 +2401,14 @@ fn sync_chunk_window(
     };
 
     let player_chunk = player_chunk_from_position(game.session.player().position);
-    let desired_chunks = desired_chunk_window(player_chunk, CHUNK_LOAD_RADIUS);
+    let desired_chunks = desired_chunk_window(player_chunk, streaming_config.chunk_load_radius);
+    let desired_mesh_chunks =
+        desired_chunk_window(player_chunk, streaming_config.chunk_mesh_radius);
     let (mut to_load, to_unload) = chunk_diff(&loaded_chunks.0, &desired_chunks);
     sort_chunks_by_distance(&mut to_load, player_chunk);
     perf_stats.desired_loads = to_load.len();
+
+    let mut immediate_mesh_rebuilds = BTreeSet::new();
 
     let mut chunk_request_budget = MAX_CHUNK_REQUESTS_PER_FRAME;
 
@@ -2348,8 +2437,15 @@ fn sync_chunk_window(
 
     for chunk in to_unload {
         let unload_start = Instant::now();
-        if let Some(entity) = spawned_chunk_meshes.0.remove(&chunk) {
-            commands.entity(entity).despawn_recursive();
+        if pending_world_saves.dirty_chunks.remove(&chunk)
+            && let Err(error) = game.blocks.save_chunk(&save_root.0, chunk)
+        {
+            error!("failed to flush dirty chunk before unload: {error}");
+            pending_world_saves.dirty_chunks.insert(chunk);
+        }
+
+        if let Some(entry) = spawned_chunk_meshes.0.remove(&chunk) {
+            despawn_chunk_mesh_entry(&mut commands, &mut meshes, entry);
         }
 
         pending_mesh_rebuilds.0.remove(&chunk);
@@ -2360,7 +2456,7 @@ fn sync_chunk_window(
         loaded_chunks.0.remove(&chunk);
 
         for neighbor in chunk_with_neighbors(chunk) {
-            if !loaded_chunks.0.contains(&neighbor) {
+            if !loaded_chunks.0.contains(&neighbor) || !desired_mesh_chunks.contains(&neighbor) {
                 continue;
             }
 
@@ -2370,6 +2466,22 @@ fn sync_chunk_window(
         perf_stats.unloaded_chunks += 1;
         perf_stats.unload += unload_start.elapsed();
     }
+
+    let chunks_without_mesh: Vec<_> = spawned_chunk_meshes
+        .0
+        .keys()
+        .copied()
+        .filter(|chunk| !desired_mesh_chunks.contains(chunk))
+        .collect();
+    for chunk in chunks_without_mesh {
+        if let Some(entry) = spawned_chunk_meshes.0.remove(&chunk) {
+            despawn_chunk_mesh_entry(&mut commands, &mut meshes, entry);
+        }
+        pending_mesh_rebuilds.0.remove(&chunk);
+    }
+    pending_mesh_rebuilds
+        .0
+        .retain(|chunk| loaded_chunks.0.contains(chunk) && desired_mesh_chunks.contains(chunk));
 
     let poll_start = Instant::now();
     let generated_chunks = world_generation_worker
@@ -2400,6 +2512,55 @@ fn sync_chunk_window(
         lifecycle_note_chunk_loaded(&mut lifecycle.controller, chunk);
         loaded_chunks.0.insert(chunk);
 
+        if desired_mesh_chunks.contains(&chunk) {
+            immediate_mesh_rebuilds.insert(chunk);
+        }
+        for neighbor in chunk_with_neighbors(chunk) {
+            if neighbor == chunk {
+                continue;
+            }
+
+            if loaded_chunks.0.contains(&neighbor) && desired_mesh_chunks.contains(&neighbor) {
+                pending_mesh_rebuilds.0.insert(neighbor);
+            }
+        }
+    }
+
+    let mut missing_visible_mesh_chunks = Vec::new();
+    for chunk in loaded_chunks.0.iter().copied() {
+        if !desired_mesh_chunks.contains(&chunk) {
+            continue;
+        }
+
+        if !spawned_chunk_meshes.0.contains_key(&chunk) {
+            missing_visible_mesh_chunks.push(chunk);
+        }
+    }
+
+    sort_chunks_by_distance(&mut missing_visible_mesh_chunks, player_chunk);
+    for (index, chunk) in missing_visible_mesh_chunks.into_iter().enumerate() {
+        if index < MAX_VISIBLE_MESH_BACKFILL_PER_FRAME {
+            immediate_mesh_rebuilds.insert(chunk);
+            pending_mesh_rebuilds.0.remove(&chunk);
+        } else {
+            pending_mesh_rebuilds.0.insert(chunk);
+        }
+    }
+
+    let mut immediate_rebuild_chunks: Vec<_> = immediate_mesh_rebuilds
+        .into_iter()
+        .filter(|chunk| loaded_chunks.0.contains(chunk) && desired_mesh_chunks.contains(chunk))
+        .collect();
+    sort_chunks_by_distance(&mut immediate_rebuild_chunks, player_chunk);
+
+    let mut remaining_mesh_budget = streaming_config.mesh_rebuilds_per_frame_budget;
+
+    for chunk in immediate_rebuild_chunks {
+        if remaining_mesh_budget == 0 {
+            pending_mesh_rebuilds.0.insert(chunk);
+            continue;
+        }
+
         pending_mesh_rebuilds.0.remove(&chunk);
 
         let mesh_start = Instant::now();
@@ -2415,33 +2576,23 @@ fn sync_chunk_window(
         perf_stats.mesh += elapsed;
         perf_stats.meshes_rebuilt += 1;
         maybe_log_mesh_rebuild_spike(&perf_config, "stream_load_current", chunk, elapsed);
-
-        for neighbor in chunk_with_neighbors(chunk) {
-            if neighbor == chunk {
-                continue;
-            }
-
-            if !loaded_chunks.0.contains(&neighbor) {
-                continue;
-            }
-
-            pending_mesh_rebuilds.0.insert(neighbor);
-        }
+        remaining_mesh_budget = remaining_mesh_budget.saturating_sub(1);
     }
 
-    let queued_rebuild_chunks: Vec<_> = pending_mesh_rebuilds
+    let mut deferred_rebuild_chunks: Vec<_> = pending_mesh_rebuilds
         .0
         .iter()
         .copied()
-        .take(perf_config.mesh_rebuild_budget_per_frame)
+        .filter(|chunk| loaded_chunks.0.contains(chunk) && desired_mesh_chunks.contains(chunk))
         .collect();
+    sort_chunks_by_distance(&mut deferred_rebuild_chunks, player_chunk);
 
-    for chunk in queued_rebuild_chunks {
+    for chunk in deferred_rebuild_chunks.into_iter().take(
+        streaming_config
+            .deferred_mesh_rebuilds_per_frame
+            .min(remaining_mesh_budget),
+    ) {
         pending_mesh_rebuilds.0.remove(&chunk);
-
-        if !loaded_chunks.0.contains(&chunk) {
-            continue;
-        }
 
         let mesh_start = Instant::now();
         rebuild_chunk_mesh_entity(
@@ -2455,7 +2606,7 @@ fn sync_chunk_window(
         let elapsed = mesh_start.elapsed();
         perf_stats.mesh += elapsed;
         perf_stats.meshes_rebuilt += 1;
-        maybe_log_mesh_rebuild_spike(&perf_config, "stream_queued", chunk, elapsed);
+        maybe_log_mesh_rebuild_spike(&perf_config, "stream_deferred", chunk, elapsed);
     }
 
     let lifecycle_start = Instant::now();
@@ -2463,7 +2614,7 @@ fn sync_chunk_window(
     perf_stats.lifecycle += lifecycle_start.elapsed();
 
     perf_stats.pending_async = world_generation_worker.worker.pending_count();
-    perf_stats.pending_mesh_rebuilds = pending_mesh_rebuilds.0.len();
+    perf_stats.mesh_rebuild_candidates = pending_mesh_rebuilds.0.len();
     perf_stats.deferred_loads = to_load
         .len()
         .saturating_sub(perf_stats.loaded_from_storage + perf_stats.requested_async);
@@ -2491,7 +2642,7 @@ fn maybe_log_chunk_window_perf(
 
     let mode = if stats.async_mode { "async" } else { "sync" };
     let log_line = format!(
-        "perf chunk_window #{} [{}]: total={total_ms:.2}ms io={:.2}ms load_or_generate={:.2}ms mesh={:.2}ms unload={:.2}ms worker_poll={:.2}ms lifecycle={:.2}ms counts(load={},gen_sync={},req_async={},apply_async={},unload={},mesh_rebuilds={},mesh_queue={},requests={},pending={},desired_loads={},deferred_loads={})",
+        "perf chunk_window #{} [{}]: total={total_ms:.2}ms io={:.2}ms load_or_generate={:.2}ms mesh={:.2}ms unload={:.2}ms worker_poll={:.2}ms lifecycle={:.2}ms counts(load={},gen_sync={},req_async={},apply_async={},unload={},mesh_rebuilds={},mesh_candidates={},requests={},pending={},desired_loads={},deferred_loads={})",
         perf_state.update_frames,
         mode,
         stats.io.as_secs_f64() * 1000.0,
@@ -2506,7 +2657,7 @@ fn maybe_log_chunk_window_perf(
         stats.applied_async,
         stats.unloaded_chunks,
         stats.meshes_rebuilt,
-        stats.pending_mesh_rebuilds,
+        stats.mesh_rebuild_candidates,
         stats.chunk_requests,
         stats.pending_async,
         stats.desired_loads,
@@ -2607,6 +2758,13 @@ fn chunk_distance_squared(chunk: ChunkPos, center: ChunkPos) -> i64 {
     let dx = i64::from(chunk.x) - i64::from(center.x);
     let dz = i64::from(chunk.z) - i64::from(center.z);
     (dx * dx) + (dz * dz)
+}
+
+fn env_i32(name: &str, default: i32) -> i32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i32>().ok())
+        .unwrap_or(default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -2780,6 +2938,7 @@ fn handle_block_interaction(
     mut block_destroy_state: ResMut<BlockDestroyState>,
     mut item_in_hand_state: ResMut<ItemInHandAnimationState>,
     mut lifecycle: ResMut<RuntimeLifecycle>,
+    mut pending_world_saves: ResMut<PendingWorldSaves>,
     look: Res<LookState>,
     cursor_capture: Res<CursorCaptureState>,
     pause_menu: Res<PauseMenuState>,
@@ -2787,7 +2946,6 @@ fn handle_block_interaction(
     loaded_chunks: Res<LoadedChunks>,
     block_assets: Res<BlockRenderAssets>,
     runtime_audio: Res<RuntimeAudio>,
-    save_root: Res<SaveRoot>,
     perf_config: Res<PerfDebugConfig>,
 ) {
     if pause_menu.open || !cursor_capture.captured || cursor_capture.just_captured {
@@ -3147,6 +3305,7 @@ fn handle_block_interaction(
         }
 
         for chunk in dirty_chunks_for_block(target) {
+            pending_world_saves.mark_chunk_dirty(chunk);
             if loaded_chunks.0.contains(&chunk) {
                 let mesh_start = Instant::now();
                 rebuild_chunk_mesh_entity(
@@ -3217,15 +3376,6 @@ fn handle_block_interaction(
             }
         } else {
             play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.35);
-        }
-
-        let target_chunk = target_chunk_for_block(target);
-        if let Err(error) = game.blocks.save_chunk(&save_root.0, target_chunk) {
-            error!("failed to save chunk after block interaction: {error}");
-        }
-
-        if let Err(error) = save_world_snapshot(&save_root.0, &game.session.world_snapshot()) {
-            error!("failed to save world snapshot after block interaction: {error}");
         }
     }
 }
@@ -3514,15 +3664,17 @@ fn play_legacy_event_sound(
     }
 
     let variant_index = (variant_seed as usize) % variants.len();
-    let handle = variants.get(variant_index);
-    play_sound_with_pitch(commands, handle, volume, pitch);
+    let Some(path) = variants.get(variant_index) else {
+        return false;
+    };
+    let handle: Handle<AudioSource> = runtime_audio.asset_server.load(path.clone());
+    play_sound_with_pitch(commands, Some(&handle), volume, pitch);
     true
 }
 
-fn load_legacy_event_audio_handles(
-    asset_server: &AssetServer,
+fn load_legacy_event_audio_paths(
     runtime_assets: &RuntimeAssetManifest,
-) -> HashMap<String, Vec<Handle<AudioSource>>> {
+) -> HashMap<String, Vec<String>> {
     let Some(relative_dir) = runtime_assets.legacy_event_audio_asset_dir.as_ref() else {
         return HashMap::new();
     };
@@ -3545,7 +3697,7 @@ fn load_legacy_event_audio_handles(
         .collect::<Vec<_>>();
     relative_wav_paths.sort();
 
-    let mut by_event_key = HashMap::<String, Vec<Handle<AudioSource>>>::new();
+    let mut by_event_key = HashMap::<String, Vec<String>>::new();
     for relative_path in relative_wav_paths {
         let stem = Path::new(&relative_path)
             .file_stem()
@@ -3561,7 +3713,7 @@ fn load_legacy_event_audio_handles(
         by_event_key
             .entry(event_key)
             .or_default()
-            .push(asset_server.load(relative_path));
+            .push(relative_path);
     }
 
     by_event_key
@@ -4425,10 +4577,51 @@ fn sync_pause_and_death_ui(
     }
 }
 
+fn flush_pending_world_saves(
+    time: Res<Time>,
+    game: Res<GameState>,
+    save_root: Res<SaveRoot>,
+    mut pending_world_saves: ResMut<PendingWorldSaves>,
+) {
+    pending_world_saves.seconds_since_last_flush += time.delta_secs();
+
+    if pending_world_saves.seconds_since_last_flush < WORLD_SAVE_FLUSH_INTERVAL_SECONDS {
+        return;
+    }
+
+    if pending_world_saves.dirty_chunks.is_empty() && !pending_world_saves.world_dirty {
+        pending_world_saves.seconds_since_last_flush = 0.0;
+        return;
+    }
+
+    pending_world_saves.seconds_since_last_flush = 0.0;
+
+    for _ in 0..WORLD_SAVE_CHUNK_BUDGET_PER_FLUSH {
+        let Some(chunk) = pending_world_saves.dirty_chunks.pop_first() else {
+            break;
+        };
+
+        if let Err(error) = game.blocks.save_chunk(&save_root.0, chunk) {
+            error!("failed to flush pending chunk save: {error}");
+            pending_world_saves.dirty_chunks.insert(chunk);
+            break;
+        }
+    }
+
+    if pending_world_saves.world_dirty {
+        if let Err(error) = save_world_snapshot(&save_root.0, &game.session.world_snapshot()) {
+            error!("failed to flush pending world snapshot: {error}");
+        } else {
+            pending_world_saves.world_dirty = false;
+        }
+    }
+}
+
 fn persist_on_exit(
     mut exit_events: EventReader<AppExit>,
     game: Res<GameState>,
     save_root: Res<SaveRoot>,
+    mut pending_world_saves: ResMut<PendingWorldSaves>,
 ) {
     let mut should_persist = false;
     for _ in exit_events.read() {
@@ -4438,6 +4631,14 @@ fn persist_on_exit(
     if !should_persist {
         return;
     }
+
+    while let Some(chunk) = pending_world_saves.dirty_chunks.pop_first() {
+        if let Err(error) = game.blocks.save_chunk(&save_root.0, chunk) {
+            error!("failed to save pending chunk at shutdown: {error}");
+        }
+    }
+
+    pending_world_saves.world_dirty = false;
 
     if let Err(error) = game.blocks.save_all_touched_chunks(&save_root.0) {
         error!("failed to save touched chunks at shutdown: {error}");
@@ -4461,6 +4662,7 @@ fn apply_lifecycle_runtime_hooks(
     loaded_chunks: Res<LoadedChunks>,
     block_assets: Res<BlockRenderAssets>,
     mut spawned_chunk_meshes: ResMut<SpawnedChunkMeshes>,
+    mut pending_world_saves: ResMut<PendingWorldSaves>,
     mut lifecycle_hooks: ResMut<RuntimeLifecycleHooks>,
     perf_config: Res<PerfDebugConfig>,
     mut perf_state: ResMut<PerfDebugState>,
@@ -4482,6 +4684,10 @@ fn apply_lifecycle_runtime_hooks(
             perf_stats.fluid_changed_blocks += outcome.changed_blocks.len();
             perf_stats.fluid_rescheduled_ticks += outcome.scheduled_ticks.len();
 
+            for chunk in &outcome.changed_chunks {
+                pending_world_saves.mark_chunk_dirty(*chunk);
+            }
+
             lifecycle_hooks
                 .pending_relight_chunks
                 .extend(outcome.changed_chunks);
@@ -4499,6 +4705,10 @@ fn apply_lifecycle_runtime_hooks(
             perf_stats.redstone_tick_outcomes += 1;
             perf_stats.redstone_changed_chunks += outcome.changed_chunks.len();
             perf_stats.redstone_rescheduled_ticks += outcome.scheduled_ticks.len();
+
+            for chunk in &outcome.changed_chunks {
+                pending_world_saves.mark_chunk_dirty(*chunk);
+            }
 
             lifecycle_hooks
                 .pending_relight_chunks
@@ -4579,45 +4789,102 @@ fn rebuild_chunk_mesh_entity(
     world: &BlockWorld,
     chunk: ChunkPos,
 ) {
-    if let Some(entity) = spawned_chunk_meshes.0.remove(&chunk) {
-        commands.entity(entity).despawn_recursive();
-    }
-
     let Some(mesh_data) = build_chunk_mesh_data(world, chunk) else {
+        if let Some(entry) = spawned_chunk_meshes.0.remove(&chunk) {
+            despawn_chunk_mesh_entry(commands, meshes, entry);
+        }
         return;
     };
 
     let (opaque_mesh, fluid_mesh) = split_terrain_mesh_by_alpha(mesh_data);
+    let has_opaque = !opaque_mesh.indices.is_empty();
+    let has_fluid = !fluid_mesh.indices.is_empty();
 
-    if opaque_mesh.indices.is_empty() && fluid_mesh.indices.is_empty() {
+    if let Some(entry) = spawned_chunk_meshes.0.get_mut(&chunk) {
+        if let Some(existing) = meshes.get_mut(&entry.opaque_mesh) {
+            *existing = terrain_mesh_to_bevy_mesh(opaque_mesh);
+        }
+        if let Some(existing) = meshes.get_mut(&entry.fluid_mesh) {
+            *existing = terrain_mesh_to_bevy_mesh(fluid_mesh);
+        }
+
+        commands.entity(entry.opaque_entity).insert(if has_opaque {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        });
+        commands.entity(entry.fluid_entity).insert(if has_fluid {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        });
         return;
     }
 
-    let entity = commands
+    if !has_opaque && !has_fluid {
+        if let Some(entry) = spawned_chunk_meshes.0.remove(&chunk) {
+            despawn_chunk_mesh_entry(commands, meshes, entry);
+        }
+        return;
+    }
+
+    let opaque_mesh_handle = meshes.add(terrain_mesh_to_bevy_mesh(opaque_mesh));
+    let fluid_mesh_handle = meshes.add(terrain_mesh_to_bevy_mesh(fluid_mesh));
+
+    let root = commands
         .spawn((Transform::default(), Visibility::default()))
         .id();
 
-    commands.entity(entity).with_children(|parent| {
-        if !opaque_mesh.indices.is_empty() {
-            let mesh_handle = meshes.add(terrain_mesh_to_bevy_mesh(opaque_mesh));
-            parent.spawn((
-                Mesh3d(mesh_handle),
+    let mut opaque_entity = Entity::PLACEHOLDER;
+    let mut fluid_entity = Entity::PLACEHOLDER;
+    commands.entity(root).with_children(|parent| {
+        opaque_entity = parent
+            .spawn((
+                Mesh3d(opaque_mesh_handle.clone()),
                 MeshMaterial3d(block_assets.opaque_material.clone()),
                 Transform::default(),
-            ));
-        }
+                if has_opaque {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                },
+            ))
+            .id();
 
-        if !fluid_mesh.indices.is_empty() {
-            let mesh_handle = meshes.add(terrain_mesh_to_bevy_mesh(fluid_mesh));
-            parent.spawn((
-                Mesh3d(mesh_handle),
+        fluid_entity = parent
+            .spawn((
+                Mesh3d(fluid_mesh_handle.clone()),
                 MeshMaterial3d(block_assets.fluid_material.clone()),
                 Transform::default(),
-            ));
-        }
+                if has_fluid {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                },
+            ))
+            .id();
     });
 
-    spawned_chunk_meshes.0.insert(chunk, entity);
+    spawned_chunk_meshes.0.insert(
+        chunk,
+        ChunkMeshRenderEntry {
+            root,
+            opaque_entity,
+            fluid_entity,
+            opaque_mesh: opaque_mesh_handle,
+            fluid_mesh: fluid_mesh_handle,
+        },
+    );
+}
+
+fn despawn_chunk_mesh_entry(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    entry: ChunkMeshRenderEntry,
+) {
+    commands.entity(entry.root).despawn_recursive();
+    meshes.remove(entry.opaque_mesh.id());
+    meshes.remove(entry.fluid_mesh.id());
 }
 
 fn split_terrain_mesh_by_alpha(mesh_data: TerrainMeshData) -> (TerrainMeshData, TerrainMeshData) {
@@ -4666,16 +4933,36 @@ fn split_terrain_mesh_by_alpha(mesh_data: TerrainMeshData) -> (TerrainMeshData, 
 }
 
 fn terrain_mesh_to_bevy_mesh(mesh_data: TerrainMeshData) -> Mesh {
+    let TerrainMeshData {
+        positions,
+        normals,
+        uvs,
+        colors,
+        indices,
+        ..
+    } = mesh_data;
+
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
 
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, mesh_data.positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, mesh_data.normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, mesh_data.uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, mesh_data.colors);
-    mesh.insert_indices(Indices::U32(mesh_data.indices));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+
+    if let Some(max_index) = indices.iter().copied().max()
+        && max_index <= u32::from(u16::MAX)
+    {
+        let compact_indices = indices
+            .into_iter()
+            .map(|index| index as u16)
+            .collect::<Vec<_>>();
+        mesh.insert_indices(Indices::U16(compact_indices));
+    } else {
+        mesh.insert_indices(Indices::U32(indices));
+    }
 
     mesh
 }
@@ -7416,7 +7703,7 @@ fn sync_inventory_player_preview(
     let idle = !sneaking && !riding && horizontal_speed <= 0.01;
 
     let mut body_part_yaw = 0.0_f32;
-    let mut body_part_pitch = 0.0_f32;
+    let body_part_pitch;
 
     let mut head_position = Vec3::new(0.0, 0.0, 0.0);
     let mut body_position = Vec3::new(0.0, 0.0, 0.0);
@@ -9059,6 +9346,18 @@ fn seed_player_inventory(inventory: &mut lce_rust::world::PlayerInventory) {
     let _ = inventory.add_item(2, 64);
     let _ = inventory.add_item(4, 64);
     let _ = inventory.add_item(5, 64);
+}
+
+fn stabilize_player_render_state(
+    game: &GameState,
+    player_render_position: &mut PlayerRenderPosition,
+    player_walk_animation: &mut PlayerWalkAnimationState,
+) {
+    let stabilized_position = world_vec3_to_bevy(game.session.player().position);
+    player_render_position.previous = stabilized_position;
+    player_render_position.current = stabilized_position;
+    player_walk_animation.walk_dist_old = player_walk_animation.walk_dist;
+    player_walk_animation.bob_old = player_walk_animation.bob;
 }
 
 fn world_vec3_to_bevy(value: lce_rust::world::Vec3) -> Vec3 {

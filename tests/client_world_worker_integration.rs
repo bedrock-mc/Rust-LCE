@@ -151,6 +151,24 @@ fn worker_prefers_storage_payload_when_save_root_is_configured() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn cancelled_queue_entries_do_not_block_later_chunk_requests() {
+    let mut worker = WorldWorker::spawn(12_345);
+    let cancelled = ChunkPos::new(3, 3);
+
+    for _ in 0..6 {
+        assert!(worker.request_chunk_generation(cancelled));
+        worker.cancel_chunk_interest(cancelled);
+    }
+
+    let wanted = ChunkPos::new(-8, 2);
+    assert!(worker.request_chunk_generation(wanted));
+
+    let generated = wait_for_generated_chunks(&mut worker, 1, Duration::from_secs(3));
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0].chunk, wanted);
+}
+
 fn unique_temp_world_root(label: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

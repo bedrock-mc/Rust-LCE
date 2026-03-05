@@ -116,6 +116,38 @@ impl PlayerInventory {
         self.add_item_with_aux(item_id, 0, count)
     }
 
+    pub fn can_add_item(&self, item_id: u16, count: u32) -> bool {
+        self.can_add_item_with_aux(item_id, 0, count)
+    }
+
+    pub fn can_add_item_with_aux(&self, item_id: u16, aux: u16, mut count: u32) -> bool {
+        if count == 0 {
+            return true;
+        }
+
+        for slot in &self.slots {
+            if count == 0 {
+                return true;
+            }
+
+            if let Some(stack) = slot
+                && stack.item_id == item_id
+                && stack.aux == aux
+                && stack.count < MAX_STACK_SIZE
+            {
+                let remaining_space = u32::from(MAX_STACK_SIZE - stack.count);
+                count = count.saturating_sub(remaining_space.min(count));
+            }
+        }
+
+        let empty_slots = self.slots.iter().filter(|slot| slot.is_none()).count();
+        let free_capacity = u32::try_from(empty_slots)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(u32::from(MAX_STACK_SIZE));
+
+        count <= free_capacity
+    }
+
     pub fn add_item_with_aux(&mut self, item_id: u16, aux: u16, mut count: u32) -> u32 {
         if count == 0 {
             return 0;

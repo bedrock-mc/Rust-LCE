@@ -45,6 +45,20 @@ pub fn recipe_by_id(id: &str) -> Option<&'static CraftRecipe> {
     RECIPES.iter().find(|recipe| recipe.id == id)
 }
 
+pub fn can_craft_recipe(
+    inventory: &PlayerInventory,
+    recipe_id: &str,
+    requested_times: u32,
+) -> bool {
+    if recipe_by_id(recipe_id).is_none() {
+        return false;
+    }
+
+    let mut trial_inventory = inventory.clone();
+    let outcome = craft_recipe(&mut trial_inventory, recipe_id, requested_times);
+    outcome.crafted_times == requested_times
+}
+
 pub fn craft_recipe(
     inventory: &mut PlayerInventory,
     recipe_id: &str,

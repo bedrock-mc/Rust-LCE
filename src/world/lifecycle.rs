@@ -55,6 +55,23 @@ pub struct ScheduledTick {
     pub execute_at: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ScheduledTickLookupKey {
+    kind: ScheduledTickKind,
+    block: BlockPos,
+    payload_id: u16,
+}
+
+impl ScheduledTickLookupKey {
+    fn from_tick(tick: ScheduledTick) -> Self {
+        Self {
+            kind: tick.kind,
+            block: tick.block,
+            payload_id: tick.payload_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkLifecycleEvent {
     ChunkLoaded {
@@ -98,6 +115,8 @@ pub struct ChunkLifecycleController {
     time: TimeState,
     weather: WeatherState,
     scheduled_ticks: BTreeMap<(u64, u64), ScheduledTick>,
+    scheduled_tick_lookup: HashMap<ScheduledTickLookupKey, (u64, u64)>,
+    scheduled_tick_keys_by_chunk: HashMap<ChunkPos, BTreeSet<(u64, u64)>>,
     triggered_ticks: Vec<ScheduledTick>,
     next_scheduled_tick_id: u64,
     events: Vec<ChunkLifecycleEvent>,
@@ -177,7 +196,16 @@ impl ChunkLifecycleController {
 
         if changed {
             self.chunk_tick_counts.remove(&chunk);
-            self.scheduled_ticks.retain(|_, tick| tick.chunk != chunk);
+
+            if let Some(chunk_keys) = self.scheduled_tick_keys_by_chunk.remove(&chunk) {
+                for key in chunk_keys {
+                    if let Some(tick) = self.scheduled_ticks.remove(&key) {
+                        self.scheduled_tick_lookup
+                            .remove(&ScheduledTickLookupKey::from_tick(tick));
+                    }
+                }
+            }
+
             self.triggered_ticks.retain(|tick| tick.chunk != chunk);
         }
 
@@ -269,27 +297,38 @@ impl ChunkLifecycleController {
             .total_ticks
             .saturating_add(u64::from(delay_ticks.max(1)));
 
-        if let Some((existing_key, existing_tick)) = self
-            .scheduled_ticks
-            .iter()
-            .find(|(_, tick)| {
-                tick.kind == kind && tick.block == block && tick.payload_id == payload_id
-            })
-            .map(|(key, tick)| (*key, *tick))
+        let lookup_key = ScheduledTickLookupKey {
+            kind,
+            block,
+            payload_id,
+        };
+
+        if let Some(&(existing_execute_at, existing_id)) =
+            self.scheduled_tick_lookup.get(&lookup_key)
         {
-            if existing_tick.execute_at <= execute_at {
-                return existing_tick.id;
+            if existing_execute_at <= execute_at {
+                return existing_id;
             }
 
+            let existing_key = (existing_execute_at, existing_id);
             if let Some(mut rescheduled_tick) = self.scheduled_ticks.remove(&existing_key) {
+                self.remove_chunk_tick_key(rescheduled_tick.chunk, existing_key);
+
                 rescheduled_tick.execute_at = execute_at;
+                let rescheduled_key = (execute_at, rescheduled_tick.id);
                 self.scheduled_ticks
-                    .insert((execute_at, rescheduled_tick.id), rescheduled_tick);
+                    .insert(rescheduled_key, rescheduled_tick);
+                self.scheduled_tick_lookup
+                    .insert(lookup_key, rescheduled_key);
+                self.insert_chunk_tick_key(rescheduled_tick.chunk, rescheduled_key);
+
                 self.events.push(ChunkLifecycleEvent::TickScheduled {
                     tick: rescheduled_tick,
                 });
                 return rescheduled_tick.id;
             }
+
+            self.scheduled_tick_lookup.remove(&lookup_key);
         }
 
         let id = self.next_scheduled_tick_id;
@@ -304,7 +343,10 @@ impl ChunkLifecycleController {
             execute_at,
         };
 
-        self.scheduled_ticks.insert((execute_at, id), tick);
+        let scheduled_key = (execute_at, id);
+        self.scheduled_ticks.insert(scheduled_key, tick);
+        self.scheduled_tick_lookup.insert(lookup_key, scheduled_key);
+        self.insert_chunk_tick_key(tick.chunk, scheduled_key);
         self.events
             .push(ChunkLifecycleEvent::TickScheduled { tick });
         id
@@ -312,18 +354,43 @@ impl ChunkLifecycleController {
 
     fn trigger_due_ticks(&mut self) {
         let now = self.time.total_ticks;
-        let due_keys: Vec<_> = self
-            .scheduled_ticks
-            .range(..=(now, u64::MAX))
-            .map(|(key, _)| *key)
-            .collect();
 
-        for key in due_keys {
-            if let Some(tick) = self.scheduled_ticks.remove(&key) {
-                self.events
-                    .push(ChunkLifecycleEvent::TickTriggered { tick });
-                self.triggered_ticks.push(tick);
+        while let Some((&(execute_at, _), _)) = self.scheduled_ticks.first_key_value() {
+            if execute_at > now {
+                break;
             }
+
+            let Some((key, tick)) = self.scheduled_ticks.pop_first() else {
+                break;
+            };
+
+            self.remove_chunk_tick_key(tick.chunk, key);
+            self.scheduled_tick_lookup
+                .remove(&ScheduledTickLookupKey::from_tick(tick));
+
+            self.events
+                .push(ChunkLifecycleEvent::TickTriggered { tick });
+            self.triggered_ticks.push(tick);
+        }
+    }
+
+    fn insert_chunk_tick_key(&mut self, chunk: ChunkPos, key: (u64, u64)) {
+        self.scheduled_tick_keys_by_chunk
+            .entry(chunk)
+            .or_default()
+            .insert(key);
+    }
+
+    fn remove_chunk_tick_key(&mut self, chunk: ChunkPos, key: (u64, u64)) {
+        let mut remove_chunk_slot = false;
+
+        if let Some(keys) = self.scheduled_tick_keys_by_chunk.get_mut(&chunk) {
+            keys.remove(&key);
+            remove_chunk_slot = keys.is_empty();
+        }
+
+        if remove_chunk_slot {
+            self.scheduled_tick_keys_by_chunk.remove(&chunk);
         }
     }
 }

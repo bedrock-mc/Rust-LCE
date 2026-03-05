@@ -123,6 +123,6 @@
 - GP.3.2c terrain rendering edge-case pass is complete (nearest atlas sampling + side-face UV orientation fix + UV inset bleed mitigation).
 - GP.3.2c grass-top shading follow-up is complete (top-face tint aligned to LCE colour-table grass common value `0x7cbd6b`).
 - M4.5 visual parity follow-up now includes a `LevelRenderer::renderClouds`-anchored baseline (legacy `environment/clouds.png` staging + camera-relative cloud layer drift).
-- Bevy client default chunk window is currently tuned to `CHUNK_LOAD_RADIUS=2` for playability while parity work continues.
+- Bevy client default chunk window is currently tuned to `CHUNK_LOAD_RADIUS=16` (override via `LCE_CHUNK_LOAD_RADIUS`), with an independent mesh staging cap via `LCE_CHUNK_MESH_RADIUS` (default `8`, temporary hard cap `10`) and a total per-frame mesh rebuild budget (`LCE_MAX_MESH_REBUILDS_PER_FRAME`, default `1`) to reduce streaming hitches/VRAM pressure while parity-debt work continues.
 - Runtime testing defaults currently include daytime boot alignment (`day_time=6000`) and creative-style double-tap jump flight toggle to speed parity verification passes.
-- Current active step: `M4.5.5` creative inventory UI parity baseline (`GP.3` edge-case sweep is closed, with deferred parity-debt follow-ups tracked in `docs/PROGRESS_TRACKER.md`).
+- Current active step: `GP.3` parity debt backlog closure (chunk mesh/update parity + save-flush stabilization resumed while `M4.5.5` remains open).

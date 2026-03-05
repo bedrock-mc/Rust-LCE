@@ -212,6 +212,23 @@ impl BlockWorld {
         blocks
     }
 
+    pub fn chunk_block_count(&self, chunk: ChunkPos) -> usize {
+        self.chunks.get(&chunk).map_or(0, HashMap::len)
+    }
+
+    pub fn for_each_block_in_chunk<F>(&self, chunk: ChunkPos, mut visitor: F)
+    where
+        F: FnMut(BlockPos, u16),
+    {
+        let Some(chunk_blocks) = self.chunks.get(&chunk) else {
+            return;
+        };
+
+        for (local_pos, block_id) in chunk_blocks {
+            visitor(local_pos.to_world(chunk), *block_id);
+        }
+    }
+
     pub fn unload_chunk(&mut self, chunk: ChunkPos) {
         self.chunks.remove(&chunk);
         self.block_data.remove(&chunk);

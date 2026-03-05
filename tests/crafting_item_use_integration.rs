@@ -1,6 +1,6 @@
 use lce_rust::world::{
-    ItemStack, PlayerInventory, block_id_for_item, craft_recipe, recipe_by_id,
-    use_selected_item_for_placement,
+    INVENTORY_SLOTS, ItemStack, PlayerInventory, block_id_for_item, can_craft_recipe, craft_recipe,
+    recipe_by_id, use_selected_item_for_placement,
 };
 
 #[test]
@@ -80,4 +80,48 @@ fn block_backed_items_map_to_expected_placeable_tile_ids() {
     assert_eq!(block_id_for_item(379), Some(117));
     assert_eq!(block_id_for_item(380), Some(118));
     assert_eq!(block_id_for_item(390), Some(140));
+}
+
+#[test]
+fn can_craft_allows_output_when_ingredients_free_space() {
+    let mut inventory = PlayerInventory::new();
+    for slot in 0..INVENTORY_SLOTS {
+        inventory
+            .set(
+                slot,
+                Some(ItemStack::new(1, 64).expect("stack should be valid")),
+            )
+            .expect("slot should be writable");
+    }
+
+    inventory
+        .set(
+            0,
+            Some(ItemStack::new(17, 1).expect("stack should be valid")),
+        )
+        .expect("slot should be writable");
+
+    assert!(can_craft_recipe(&inventory, "planks_from_log", 1));
+}
+
+#[test]
+fn can_craft_rejects_when_output_still_overflows_after_consumption() {
+    let mut inventory = PlayerInventory::new();
+    for slot in 0..INVENTORY_SLOTS {
+        inventory
+            .set(
+                slot,
+                Some(ItemStack::new(5, 64).expect("stack should be valid")),
+            )
+            .expect("slot should be writable");
+    }
+
+    inventory
+        .set(
+            0,
+            Some(ItemStack::new(17, 17).expect("stack should be valid")),
+        )
+        .expect("slot should be writable");
+
+    assert!(!can_craft_recipe(&inventory, "planks_from_log", 17));
 }

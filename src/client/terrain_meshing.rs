@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::world::{
     BlockPos, BlockWorld, ChunkPos, FluidKind, LAVA_FLOWING_BLOCK_ID, LAVA_SOURCE_BLOCK_ID,
     REDSTONE_WIRE_BLOCK_ID, REDSTONE_WIRE_POWERED_BLOCK_ID, WATER_FLOWING_BLOCK_ID,
@@ -42,37 +40,36 @@ pub struct TerrainMeshData {
 }
 
 pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<TerrainMeshData> {
-    let blocks = world.blocks_in_chunk(chunk);
-    if blocks.is_empty() {
+    if world.chunk_block_count(chunk) == 0 {
         return None;
     }
 
     let mut mesh = TerrainMeshData::default();
 
-    for (block_pos, block_id) in blocks {
+    world.for_each_block_in_chunk(chunk, |block_pos, block_id| {
         if is_fluid_block(block_id) {
             append_fluid_block(world, &mut mesh, block_pos, block_id);
-            continue;
+            return;
         }
 
         if block_id == REDSTONE_WIRE_BLOCK_ID || block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
             append_redstone_wire(world, &mut mesh, block_pos, block_id);
-            continue;
+            return;
         }
 
         if is_torch_block(block_id) {
             append_torch(world, &mut mesh, block_pos, block_id);
-            continue;
+            return;
         }
 
         if block_id == 69 {
             append_lever(world, &mut mesh, block_pos, block_id);
-            continue;
+            return;
         }
 
         if block_id == 29 || block_id == 33 {
             append_oriented_piston_block(world, &mut mesh, block_pos, block_id);
-            continue;
+            return;
         }
 
         if let Some((tile_x, tile_y)) = flat_top_block_tile(block_id) {
@@ -83,12 +80,12 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
                 tile_y,
                 FLAT_TILE_RENDER_OFFSET,
             );
-            continue;
+            return;
         }
 
         if let Some((tile_x, tile_y)) = cross_plane_block_tile(block_id) {
             append_cross_plane_block(&mut mesh, block_pos, tile_x, tile_y);
-            continue;
+            return;
         }
 
         for face in FACE_DEFS {
@@ -105,7 +102,7 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
 
             append_face(&mut mesh, block_pos, block_id, face);
         }
-    }
+    });
 
     if mesh.indices.is_empty() {
         None
@@ -181,26 +178,26 @@ pub fn build_block_break_overlay_mesh_data(
 
 pub fn dirty_chunks_for_block(block_pos: BlockPos) -> Vec<ChunkPos> {
     let center = ChunkPos::from_block(block_pos);
-    let mut chunks = BTreeSet::new();
-    chunks.insert(center);
+    let mut chunks = Vec::with_capacity(5);
+    chunks.push(center);
 
     let local_x = block_pos.x.rem_euclid(16);
     let local_z = block_pos.z.rem_euclid(16);
 
     if local_x == 0 {
-        chunks.insert(ChunkPos::new(center.x - 1, center.z));
+        chunks.push(ChunkPos::new(center.x - 1, center.z));
     }
     if local_x == 15 {
-        chunks.insert(ChunkPos::new(center.x + 1, center.z));
+        chunks.push(ChunkPos::new(center.x + 1, center.z));
     }
     if local_z == 0 {
-        chunks.insert(ChunkPos::new(center.x, center.z - 1));
+        chunks.push(ChunkPos::new(center.x, center.z - 1));
     }
     if local_z == 15 {
-        chunks.insert(ChunkPos::new(center.x, center.z + 1));
+        chunks.push(ChunkPos::new(center.x, center.z + 1));
     }
 
-    chunks.into_iter().collect()
+    chunks
 }
 
 pub fn atlas_tile_for_block_face(block_id: u16, face: BlockFace) -> (u8, u8) {

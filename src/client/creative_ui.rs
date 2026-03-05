@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use crate::world::inventory::MAX_STACK_SIZE;
 use crate::world::{HOTBAR_SLOTS, ItemStack, PlayerInventory};
 
@@ -37,6 +40,10 @@ pub const CREATIVE_TABS: [CreativeInventoryTab; 8] = [
     CreativeInventoryTab::Brewing,
     CreativeInventoryTab::Misc,
 ];
+
+type CreativeEntryCache = HashMap<(CreativeInventoryTab, usize), Vec<CreativeItemEntry>>;
+
+static CREATIVE_ENTRY_CACHE: OnceLock<CreativeEntryCache> = OnceLock::new();
 
 impl CreativeInventoryTab {
     pub fn index(self) -> usize {
@@ -584,21 +591,12 @@ fn expand_entries_with_aux(tab: CreativeInventoryTab, item_ids: &[u16]) -> Vec<C
 pub fn creative_tab_entries_for_dynamic_group(
     tab: CreativeInventoryTab,
     dynamic_group: usize,
-) -> Vec<CreativeItemEntry> {
-    if tab == CreativeInventoryTab::Brewing {
-        let source = match dynamic_group % 5 {
-            0 => BREWING_GROUP_ITEMS,
-            1 => BREWING_GROUP_POTIONS_LEVEL2_EXTENDED,
-            2 => BREWING_GROUP_POTIONS_EXTENDED,
-            3 => BREWING_GROUP_POTIONS_LEVEL2,
-            4 => BREWING_GROUP_POTIONS_BASIC,
-            _ => BREWING_GROUP_ITEMS,
-        };
-
-        return source.iter().rev().copied().collect();
-    }
-
-    expand_entries_with_aux(tab, creative_tab_items(tab))
+) -> &'static [CreativeItemEntry] {
+    let normalized_dynamic_group = normalize_dynamic_group(tab, dynamic_group);
+    creative_entry_cache()
+        .get(&(tab, normalized_dynamic_group))
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 pub fn creative_tab_entry_page_count_for_dynamic_group(
@@ -666,6 +664,55 @@ pub fn creative_selector_items_page_for_dynamic_group(
     }
 
     selector
+}
+
+fn creative_entry_cache() -> &'static CreativeEntryCache {
+    CREATIVE_ENTRY_CACHE.get_or_init(build_creative_entry_cache)
+}
+
+fn build_creative_entry_cache() -> CreativeEntryCache {
+    let mut cache = HashMap::new();
+
+    for tab in CREATIVE_TABS {
+        let dynamic_group_count = creative_tab_dynamic_group_count(tab).max(1);
+        for dynamic_group in 0..dynamic_group_count {
+            cache.insert(
+                (tab, dynamic_group),
+                build_entries_for_dynamic_group(tab, dynamic_group),
+            );
+        }
+    }
+
+    cache
+}
+
+fn normalize_dynamic_group(tab: CreativeInventoryTab, dynamic_group: usize) -> usize {
+    let dynamic_group_count = creative_tab_dynamic_group_count(tab);
+    if dynamic_group_count == 0 {
+        0
+    } else {
+        dynamic_group % dynamic_group_count
+    }
+}
+
+fn build_entries_for_dynamic_group(
+    tab: CreativeInventoryTab,
+    dynamic_group: usize,
+) -> Vec<CreativeItemEntry> {
+    if tab == CreativeInventoryTab::Brewing {
+        let source = match dynamic_group % 5 {
+            0 => BREWING_GROUP_ITEMS,
+            1 => BREWING_GROUP_POTIONS_LEVEL2_EXTENDED,
+            2 => BREWING_GROUP_POTIONS_EXTENDED,
+            3 => BREWING_GROUP_POTIONS_LEVEL2,
+            4 => BREWING_GROUP_POTIONS_BASIC,
+            _ => BREWING_GROUP_ITEMS,
+        };
+
+        return source.iter().rev().copied().collect();
+    }
+
+    expand_entries_with_aux(tab, creative_tab_items(tab))
 }
 
 pub fn target_hotbar_slot_for_creative_item(

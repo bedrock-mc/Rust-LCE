@@ -269,3 +269,51 @@ fn earlier_tick_request_reschedules_existing_entry_sooner() {
     assert_eq!(due[0].id, original_id);
     assert_eq!(due[0].execute_at, 2);
 }
+
+#[test]
+fn triggered_tick_can_be_scheduled_again_after_firing() {
+    let mut lifecycle = ChunkLifecycleController::new();
+    let block = BlockPos::new(8, 70, -2);
+
+    let first_id = lifecycle.schedule_block_tick(block, 55, 1);
+    lifecycle.tick_once();
+    let first_due = lifecycle.drain_triggered_ticks();
+    assert_eq!(first_due.len(), 1);
+    assert_eq!(first_due[0].id, first_id);
+
+    let second_id = lifecycle.schedule_block_tick(block, 55, 3);
+    assert_ne!(second_id, first_id);
+
+    lifecycle.tick_many(2);
+    assert!(lifecycle.drain_triggered_ticks().is_empty());
+
+    lifecycle.tick_once();
+    let second_due = lifecycle.drain_triggered_ticks();
+    assert_eq!(second_due.len(), 1);
+    assert_eq!(second_due[0].id, second_id);
+    assert_eq!(second_due[0].execute_at, 4);
+}
+
+#[test]
+fn unload_clears_tick_lookup_for_same_target_reschedule() {
+    let chunk = ChunkPos::new(0, 0);
+    let block = BlockPos::new(3, 65, 4);
+    let mut lifecycle = ChunkLifecycleController::new();
+
+    lifecycle.load_chunk(chunk);
+    let first_id = lifecycle.schedule_block_tick(block, 12, 8);
+    assert_eq!(lifecycle.pending_scheduled_tick_count(), 1);
+
+    assert!(lifecycle.unload_chunk(chunk));
+    assert_eq!(lifecycle.pending_scheduled_tick_count(), 0);
+
+    lifecycle.load_chunk(chunk);
+    let second_id = lifecycle.schedule_block_tick(block, 12, 1);
+    assert_ne!(second_id, first_id);
+
+    lifecycle.tick_once();
+    let due = lifecycle.drain_triggered_ticks();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].id, second_id);
+    assert_eq!(due[0].execute_at, 1);
+}

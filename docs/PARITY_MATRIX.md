@@ -42,5 +42,6 @@ Status legend:
 1. Expand save/chunk payload parity (`level.dat`, chunk payload schema, tile entities/entities fields).
 2. Replace simplified gameplay registries with C++-anchored static ctor coverage (items, recipes, place/use mappings).
 3. Port broader entity/mob behavior from `Minecraft.World` class-by-class, starting with core hostile/passive state machines.
-4. Close M4.5.5 UI parity debt and remove temporary non-parity shortcuts.
-5. Complete audio cue parity (XSB cue table + deterministic bank event routing).
+4. Close GP.3 deferred render/update debt (chunk mesh rebuild parity path + fluid ordering cleanup, then retire temporary throttles).
+5. Close M4.5.5 UI parity debt and remove temporary non-parity shortcuts.
+6. Complete audio cue parity (XSB cue table + deterministic bank event routing).

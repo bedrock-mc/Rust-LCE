@@ -10,7 +10,9 @@ pub mod simulation;
 pub mod worldgen;
 
 pub use blocks::{BlockPos, BlockWorld, ChunkLoadOutcome, ChunkPos};
-pub use crafting::{CraftOutcome, CraftRecipe, RECIPES, craft_recipe, recipe_by_id};
+pub use crafting::{
+    CraftOutcome, CraftRecipe, RECIPES, can_craft_recipe, craft_recipe, recipe_by_id,
+};
 pub use entities::{
     DEFAULT_MOB_MAX_HEALTH, EntityId, EntityKind, EntityState, EntityWorld,
     MOB_WALK_SPEED_BLOCKS_PER_SECOND, MobKind,
