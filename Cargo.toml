@@ -1,0 +1,32 @@
+[package]
+name = "lce_rust"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+bevy_client = ["dep:bevy"]
+miles_audio = []
+
+[dependencies]
+bevy = { version = "0.15", optional = true, features = ["wav"] }
+
+[lib]
+name = "lce_rust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bevy_client"
+path = "src/bin/bevy_client.rs"
+required-features = ["bevy_client"]
+
+[[bin]]
+name = "miles_smoke"
+path = "src/bin/miles_smoke.rs"
+required-features = ["miles_audio"]
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

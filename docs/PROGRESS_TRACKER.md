@@ -1,0 +1,370 @@
+# LCEMP Rust Port Progress Tracker
+
+Last updated: 2026-03-04
+Current phase: M4.5 Gameplay UI parity completion (resumed)
+Current step: M4.5.5 Creative inventory UI parity baseline
+Engine decision: Bevy for client/runtime integration on Windows
+
+## Tracking Rules
+- Update this file at the start of each step.
+- Update this file immediately when a step completes.
+- List integration tests added for each completed step.
+- Keep `docs/PARITY_MATRIX.md` synchronized with class/file parity coverage.
+- No step is complete until this tracker and tests are both updated.
+
+## Step Checklist
+
+### P0 Planning
+- [x] P0.1 Save V2 plan to file (`docs/PORT_PLAN_V2.md`)
+- [x] P0.2 Create progress tracker (`docs/PROGRESS_TRACKER.md`)
+
+### M0 Foundation
+- [x] M0.1 Implement deterministic fixed-step runtime loop scaffold
+  - Files: `src/core/timing.rs`, `src/runtime/fixed_step.rs`
+  - Integration tests: `tests/runtime_loop_integration.rs`
+- [x] M0.2 Add boot sequence scaffold with explicit initialization ordering
+  - Files: `src/runtime/bootstrap.rs`
+  - Integration tests: `tests/bootstrap_sequence_integration.rs`
+- [x] M0.3 Add offline world bootstrap harness shell
+  - Files: `src/world/mod.rs`
+  - Integration tests: `tests/offline_world_bootstrap_integration.rs`
+
+### M1 Core Save/World Backbone
+- [x] M1.1 NBT read/write compatibility baseline
+  - Files: `src/save/nbt.rs`, `src/save/mod.rs`, `src/lib.rs`
+  - Integration tests: `tests/nbt_integration.rs`
+  - Validation: `cargo check --tests` and `cargo test` passed (via VS toolchain environment).
+- [x] M1.2 Region/chunk storage baseline
+  - Files: `src/save/region.rs`, `src/save/mod.rs`
+  - Integration tests: `tests/region_file_integration.rs`
+  - Validation: `cargo check --tests` and `cargo test` passed (via VS toolchain environment).
+- [x] M1.3 Create/load/save round-trip world flow
+  - Files: `src/save/world_io.rs`, `src/save/mod.rs`
+  - Integration tests: `tests/world_save_roundtrip_integration.rs`
+  - Validation: `cargo check --tests` and `cargo test` passed (via VS toolchain environment).
+
+### Mandatory Minecraft.World Parity Checklist
+- [x] World generation stack parity (noise + biome + level source/decorator pipeline)
+  - Reference anchors: `RandomLevelSource`, `HellRandomLevelSource`, `TheEndLevelRandomLevelSource`, `BiomeSource`, `BiomeDecorator`, `PerlinNoise`, `SimplexNoise`
+  - [x] WG.1 Deterministic worldgen scaffolding baseline
+    - Files: `src/world/mod.rs`, `src/world/worldgen/mod.rs`, `src/world/worldgen/noise.rs`, `src/world/worldgen/biome.rs`, `src/world/worldgen/level_source.rs`
+    - Integration tests: `tests/worldgen_noise_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] WG.2 Parity-fidelity pass against `Minecraft.World` reference outputs (biome layers/cache + decorators/populators)
+    - [x] WG.2.1 Biome layer/cache baseline (`BiomeSource` + `BiomeCache` semantics)
+      - Files: `src/world/worldgen/biome.rs`, `src/world/worldgen/biome_cache.rs`, `src/world/worldgen/mod.rs`
+      - Integration tests: `tests/worldgen_biome_cache_integration.rs`
+      - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+    - [x] WG.2.2 Decorator/populator parity baseline against reference generation rules
+      - Files: `src/world/worldgen/biome.rs`, `src/world/worldgen/level_source.rs`, `src/world/blocks.rs`, `src/bin/bevy_client.rs`, `src/world/mod.rs`
+      - Integration tests: `tests/worldgen_decorator_integration.rs`, `tests/worldgen_chunk_fallback_integration.rs`, `tests/worldgen_noise_integration.rs`
+      - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+    - [x] WG.2.3 Seeded reference fixture comparison against `LCE-Original/Minecraft.World` outputs
+      - Files: `tests/worldgen_reference_fixture_integration.rs`
+      - Integration tests: `tests/worldgen_reference_fixture_integration.rs`
+      - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] World/chunk lifecycle parity (chunk lifecycle, tile/block ticks, lighting hooks, weather/time hooks)
+  - Reference anchors: `Level`, chunk/tick flows in `Minecraft.World`
+  - [x] WL.1 Chunk lifecycle/tick/weather scaffold baseline
+    - Files: `src/world/lifecycle.rs`, `src/world/mod.rs`
+    - Integration tests: `tests/world_lifecycle_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] WL.2 Integrate lifecycle controller into runtime chunk load/unload/tick flow
+    - Files: `src/bin/bevy_client.rs`, `src/client/chunk_streaming.rs`, `src/world/lifecycle.rs`
+    - Integration tests: `tests/client_chunk_streaming_integration.rs`, `tests/world_lifecycle_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] WL.3 Add block/tile tick queue scaffolding and deterministic scheduling tests
+    - Files: `src/world/lifecycle.rs`, `src/world/mod.rs`
+    - Integration tests: `tests/world_lifecycle_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] WL.4 Add lighting/weather runtime hook bridge and lifecycle event consumption path
+    - Files: `src/client/lifecycle_hooks.rs`, `src/client/world_worker.rs`, `src/client/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/client_lifecycle_hooks_integration.rs`, `tests/client_world_worker_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] Entities/mobs/data-path parity from `Minecraft.World` into Rust world simulation
+  - [x] EM.1 Entities/mobs/data-path baseline scaffolding
+    - Files: `src/world/entities.rs`, `src/world/simulation.rs`, `src/world/mod.rs`
+    - Integration tests: `tests/entities_mobs_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] Save/data-path parity baseline (`NBT` + region/chunk + level snapshot round-trip)
+  - Reference anchors: `NbtIo`, `RegionFile`, `McRegionChunkStorage`, `DirectoryLevelStorage`
+- [x] Remaining `Minecraft.World` gameplay subsystems (fluids/redstone-like logic, decorators/populators, edge cases)
+  - [x] GP.1 Fluids tick/scheduling baseline scaffold (water/lava IDs + scheduling + runtime hook consumption)
+    - Files: `src/world/fluids.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`, `src/client/world_worker.rs`, `src/world/blocks.rs`
+    - Integration tests: `tests/fluids_lifecycle_integration.rs`, `tests/client_world_worker_integration.rs`, `tests/block_persistence_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] GP.2 Redstone-like logic baseline scaffold
+    - Files: `src/world/redstone.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/redstone_lifecycle_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] GP.3 Remaining edge-case parity sweep
+    - [x] GP.3.1 Player solid-block collision/physics baseline
+      - Files: `src/world/simulation.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`
+      - Integration tests: `tests/player_collision_integration.rs`, `tests/spawn_movement_integration.rs`
+      - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] GP.3.2 Remaining world gameplay edge cases (decorator/populator + subsystem corner cases)
+    - [x] GP.3.2a Movement/input edge cases baseline
+      - Scope: block placement overlap guard, jump arc parity tuning (`0.42` jump impulse equivalent), creative flight double-tap window/release semantics alignment.
+      - Files: `src/client/interaction.rs`, `src/bin/bevy_client.rs`, `src/world/simulation.rs`, `src/world/worldgen/biome.rs`
+      - Integration tests: `tests/client_interaction_integration.rs`, `tests/spawn_movement_integration.rs`, `tests/player_collision_integration.rs`
+      - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+    - [x] GP.3.2b Decorator/populator + remaining subsystem corner cases
+      - [x] Lifecycle scheduled-tick dedupe edge case baseline
+        - Scope: dedupe duplicate block/tile tick schedules for same `(kind, block, payload)` and allow earlier re-scheduling to move execution sooner.
+        - Files: `src/world/lifecycle.rs`
+        - Integration tests: `tests/world_lifecycle_integration.rs`
+        - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+      - [x] Lifecycle unload/tick-queue cleanup + decorator placement invariants
+        - Scope: cancel pending/triggered ticks for unloaded chunks, clear chunk tick counters on unload, and assert decorator placements stay within valid world coordinate bounds.
+        - Files: `src/world/lifecycle.rs`, `src/world/worldgen/biome.rs`
+        - Integration tests: `tests/world_lifecycle_integration.rs`, `tests/worldgen_decorator_integration.rs`
+        - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+      - [x] Terrain atlas sampling/UV orientation edge-case pass
+        - Scope: force nearest-neighbor image sampling for block atlas, fix side-face UV orientation to keep vertical texture axis upright, and add atlas UV inset to reduce tile bleed.
+        - Files: `src/bin/bevy_client.rs`, `src/client/terrain_meshing.rs`
+        - Integration tests: `tests/terrain_meshing_integration.rs`
+        - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+      - [x] Biome decorator placement-window + spring-depth parity pass
+        - Scope: port `Minecraft.World/BiomeDecorator.cpp` `+8` X/Z decorator placement window semantics and nested random depth sampling for water/lava springs; wire surface placement Y sampling via world-coordinate height lookup.
+        - Files: `src/world/worldgen/biome.rs`, `src/world/worldgen/level_source.rs`
+        - Integration tests: `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, `tests/worldgen_noise_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test worldgen_decorator_integration`, `cargo test --test worldgen_reference_fixture_integration`, `cargo test --test worldgen_noise_integration`, and `cargo test --test worldgen_chunk_fallback_integration` passed.
+      - [x] Biome decorator biome-specific extras parity pass
+        - Scope: port `Minecraft.World/BiomeDecorator.cpp` + biome overrides for pumpkin chance (`1/32`), desert well chance (`1/1000` in desert biomes), heightmap-vs-top-solid placement semantics, waterlily Y descent behavior, and brown-mushroom heightmap attempt behavior.
+        - Files: `src/world/worldgen/biome.rs`, `src/world/worldgen/level_source.rs`
+        - Integration tests: `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, `tests/worldgen_noise_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test worldgen_decorator_integration`, `cargo test --test worldgen_reference_fixture_integration`, `cargo test --test worldgen_noise_integration`, `cargo test --test worldgen_chunk_fallback_integration`, `cargo test --test client_interaction_integration`, and `cargo test --test terrain_meshing_integration` passed.
+      - [x] Biome decorator ore-pass parity (`decorateOres`) sweep
+        - Scope: port `Minecraft.World/BiomeDecorator.cpp::decorateOres` attempt counts/ranges and ore coordinate window semantics (`x/z = chunk origin + nextInt(16)` with no `+8` offset), including lapis average-depth sampling.
+        - Files: `src/world/worldgen/biome.rs`
+        - Integration tests: `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, `tests/worldgen_noise_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test worldgen_decorator_integration`, `cargo test --test worldgen_reference_fixture_integration`, `cargo test --test worldgen_noise_integration`, `cargo test --test worldgen_chunk_fallback_integration`, `cargo test --test client_interaction_integration`, and `cargo test --test terrain_meshing_integration` passed.
+      - [x] Nether/End decorator-source parity follow-up
+        - Scope: wire biome-decorator outputs for `HellRandomLevelSource`, and port `TheEndBiomeDecorator` chunk-triggered specials (`8` spikes, origin dragon spawn marker, `(-16,-16)` podium marker) while preserving End `decorateOres` behavior without overworld surface-feature passes.
+        - Files: `src/world/worldgen/level_source.rs`, `src/world/worldgen/biome.rs`
+        - Integration tests: `tests/worldgen_end_decorator_integration.rs`, `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, `tests/worldgen_noise_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test worldgen_end_decorator_integration`, `cargo test --test worldgen_decorator_integration`, `cargo test --test worldgen_reference_fixture_integration`, `cargo test --test worldgen_noise_integration`, `cargo test --test client_interaction_integration`, and `cargo test --test terrain_meshing_integration` passed.
+      - [x] Fluid simulation parity follow-up (`LiquidTile` dynamic/static behavior)
+        - Scope: port C++-anchored dynamic/static liquid update semantics (depth metadata, downhill + slope spread, decay/evaporation, water-neighbor reactivation, and lava-water stone conversion), and schedule neighbor fluid updates on block changes.
+        - Files: `src/world/fluids.rs`, `src/world/blocks.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`
+        - Integration tests: `tests/fluids_lifecycle_integration.rs`, `tests/block_persistence_integration.rs`, `tests/client_world_worker_integration.rs`, `tests/client_interaction_integration.rs`, `tests/player_collision_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test fluids_lifecycle_integration`, `cargo test --test block_persistence_integration`, `cargo test --test client_world_worker_integration`, `cargo test --test client_interaction_integration`, `cargo test --test player_collision_integration`, `cargo test --test spawn_movement_integration`, `cargo test --test terrain_meshing_integration`, `cargo test --test worldgen_end_decorator_integration`, `cargo test --test worldgen_decorator_integration`, `cargo test --test worldgen_reference_fixture_integration`, and `cargo test --test worldgen_noise_integration` passed.
+      - [x] Fluid rendering/interaction parity follow-up (`LiquidTile` visual + use semantics)
+        - Scope: port fluid mesh shape semantics from `TileRenderer::tesselateWaterInWorld`/`getWaterHeight` (sloped top heights, flow-driven top UV rotation, side-height UV mapping, fluid translucency), and allow block placement to replace fluid cells via parity interaction rules.
+        - Scope extension: merged fluid draw submission into a global fluid mesh pass (instead of per-chunk transparent entities) to remove chunk-edge transparency ordering seams; removed extra custom vertex alpha tint so water opacity comes from original texture alpha.
+        - Files: `src/client/terrain_meshing.rs`, `src/client/interaction.rs`, `src/bin/bevy_client.rs`
+        - Integration tests: `tests/terrain_meshing_integration.rs`, `tests/client_interaction_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test terrain_meshing_integration`, `cargo test --test client_interaction_integration`, `cargo test --test fluids_lifecycle_integration`, `cargo test --test block_persistence_integration`, and `cargo test --test spawn_movement_integration` passed.
+      - [x] Runtime fluid/chunk corner-case stabilization + diagnostics pass
+        - Scope: preserve cross-chunk fluid surface sampling parity, add chunk-mesh rebuild queue/budget controls to avoid stream-time rebuild bursts, and add targeted per-chunk mesh-rebuild spike diagnostics for follow-up profiling.
+        - Files: `src/bin/bevy_client.rs`, `src/client/terrain_meshing.rs`
+        - Integration tests: `tests/client_chunk_streaming_integration.rs`, `tests/client_lifecycle_hooks_integration.rs`, `tests/terrain_meshing_integration.rs`, `tests/fluids_lifecycle_integration.rs`
+        - Validation: `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_chunk_streaming_integration`, `cargo test --test client_lifecycle_hooks_integration`, `cargo test --test terrain_meshing_integration`, and `cargo test --test fluids_lifecycle_integration` passed.
+    - [ ] GP.3 parity debt backlog (deferred while M4.5 UI parity is active)
+      - [ ] Replace temporary chunk mesh rebuild budget/queue throttles with a C++ parity-accurate render/update path (remove reliance on `LCE_MESH_REBUILD_BUDGET` for baseline playability).
+      - [ ] Revisit fluid render ordering/parity path against original client render layers to remove remaining chunk-water hitch edge cases without non-parity throttles.
+      - [ ] Normalize tracker/docs notes with runtime defaults after parity debt close (fluid pass wording + `CHUNK_LOAD_RADIUS` note alignment).
+
+### M2 First Playable Offline Slice
+- [x] M2.1 Spawn and movement loop
+  - Files: `src/world/simulation.rs`, `src/world/mod.rs`
+  - Integration tests: `tests/spawn_movement_integration.rs`
+  - Validation: `cargo test` passed (via VS toolchain environment).
+- [x] M2.2 Break/place block persistence
+  - Files: `src/world/blocks.rs`, `src/world/mod.rs`
+  - Integration tests: `tests/block_persistence_integration.rs`
+  - Validation: `cargo test` passed (via VS toolchain environment).
+- [x] M2.3 End-to-end offline gameplay smoke scenario
+  - Files: `src/world/simulation.rs`
+  - Integration tests: `tests/offline_gameplay_smoke_integration.rs`
+  - Validation: `cargo test` passed (via VS toolchain environment).
+
+### M3 Gameplay Systems Parity
+- [x] M3.1 Inventory and hotbar baseline
+  - Files: `src/world/inventory.rs`, `src/world/simulation.rs`, `src/world/mod.rs`
+  - Integration tests: `tests/inventory_hotbar_integration.rs`
+  - Validation: `cargo test` passed (via VS toolchain environment).
+- [x] M3.2 Crafting and item use baseline
+  - Files: `src/world/crafting.rs`, `src/world/item_use.rs`, `src/world/inventory.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`
+  - Integration tests: `tests/crafting_item_use_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] M3.3 Combat/health/death-respawn baseline
+  - Files: `src/world/simulation.rs`, `src/world/mod.rs`, `src/bin/bevy_client.rs`
+  - Integration tests: `tests/combat_lifecycle_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+
+### M4 Client Parity (Fast-track Playable Path)
+- [x] M4.0 Bevy vertical slice app shell
+  - Files: `Cargo.toml`, `src/bin/bevy_client.rs`, `src/client/mod.rs`, `src/client/interaction.rs`, `src/world/blocks.rs`, `src/lib.rs`
+  - Integration tests: `tests/client_interaction_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] M4.1 Mouse-look and targeting polish
+  - Files: `src/bin/bevy_client.rs`, `src/client/interaction.rs`
+  - Integration tests: `tests/client_interaction_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] M4.2 Chunk visualization path beyond interaction-spawned blocks
+  - Files: `src/bin/bevy_client.rs`, `src/client/chunk_streaming.rs`, `src/world/blocks.rs`, `src/client/mod.rs`
+  - Integration tests: `tests/client_chunk_streaming_integration.rs`, `tests/block_chunk_view_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] M4.3 Original asset integration path (textures/UI/audio)
+  - [x] M4.3.1 Terrain texture staging baseline
+    - Files: `src/client/asset_pipeline.rs`, `src/bin/bevy_client.rs`, `src/client/mod.rs`
+    - Integration tests: `tests/client_asset_pipeline_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] M4.3.2 UI asset wiring
+    - Files: `src/bin/bevy_client.rs`, `src/client/asset_pipeline.rs`
+    - Integration tests: `tests/client_asset_pipeline_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] M4.3.3 Audio asset wiring
+    - Files: `src/bin/bevy_client.rs`, `src/client/asset_pipeline.rs`
+    - Integration tests: `tests/client_asset_pipeline_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [x] M4.4 Chunk terrain meshing/atlas rendering path
+  - Files: `src/client/terrain_meshing.rs`, `src/bin/bevy_client.rs`
+  - Integration tests: `tests/terrain_meshing_integration.rs`
+  - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+- [ ] M4.5 Gameplay UI parity completion (reopened)
+  - [x] M4.5.1 Dynamic hotbar HUD bound to live inventory state
+    - Files: `src/client/hotbar_ui.rs`, `src/client/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/client_hotbar_ui_integration.rs`
+    - Validation: `cargo test --test client_hotbar_ui_integration`, `cargo test --test inventory_hotbar_integration`, and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] M4.5.2 Inventory screen + cursor handoff/capture flow
+    - Files: `src/client/inventory_ui.rs`, `src/client/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/client_inventory_ui_integration.rs`
+    - Validation: `cargo test --test client_inventory_ui_integration`, `cargo test --test client_hotbar_ui_integration`, `cargo test --test inventory_hotbar_integration`, and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] M4.5.3 Crafting UI wiring against existing backend recipes
+    - Files: `src/client/crafting_ui.rs`, `src/client/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/client_crafting_ui_integration.rs`, `tests/crafting_item_use_integration.rs`, `tests/client_inventory_ui_integration.rs`
+    - Validation: `cargo test` and `cargo check --features bevy_client --bin bevy_client` passed (via VS toolchain environment).
+  - [x] M4.5.4 Health/death/respawn HUD + pause/menu baseline
+    - Files: `src/client/gameplay_ui.rs`, `src/client/mod.rs`, `src/bin/bevy_client.rs`
+    - Integration tests: `tests/client_gameplay_ui_integration.rs`, `tests/combat_lifecycle_integration.rs`
+    - Validation: `cargo test`, `cargo check --features bevy_client --bin bevy_client`, and `cargo run --bin bevy_client --features bevy_client` startup smoke passed (via VS toolchain environment).
+  - [ ] M4.5.5 Creative inventory UI parity baseline (in progress)
+    - Progress: added creative inventory overlay root with C++-anchored tab order (`Structures`, `Decoration`, `Redstone + Transport`, `Materials`, `Food`, `Tools`, `Brewing`, `Misc`), 5x10 selector grid scaffold, tab/page navigation (`Left`/`Right`, `PageUp`/`PageDown`), creative-to-hotbar placement semantics matching `IUIScene_CreativeMenu::getEmptyInventorySlot` preference order (stack first, then empty quick-slot), selector/hotbar item icon rendering via legacy terrain/items atlas UV routing so creative contents are visible in-grid (non-block items now source from `items.png`), and pause/death menu text now uses staged legacy bitmap font glyphs (`font/default.png`) instead of Bevy default vector text when available.
+    - Creative behavior follow-up: selector pickup now gives full stacks (`64`) and world placement no longer consumes stack count while flight/creative is enabled; dropping one item from hotbar (`Q`) decrements as expected.
+    - Creative catalog follow-up: tab item lists now include the broad base-id set from `IUIScene_CreativeMenu::staticCtor` (building/decoration/redstone+transport/materials/food/tools/brewing/misc), and placement mapping now allows tile IDs `1..=255` plus key block-backed item IDs (`door_wood`, `door_iron`, `bed`, `brewingStand`, `cauldron`, `flowerPot`).
+    - Creative tab visual/order follow-up: tab buttons now render representative item icons (instead of placeholder letters) using terrain/items atlas routing with C++-anchored tab icon ids, and the `Redstone + Transport` tab item order now matches the original `Transport`-then-`Redstone` group sequence from `IUIScene_CreativeMenu::staticCtor`.
+    - Creative input/page follow-up: creative state now tracks per-tab page/dynamic-group position (matching C++ `m_tabPage`/`m_tabDynamicPos` persistence semantics), and `PageUp` now cycles brewing dynamic potion groups while preserving keyboard page navigation via `Shift+PageUp` for previous page and `PageDown` for next page.
+    - Creative UX/visual follow-up: gameplay hotbar now renders non-block items as 2D icon overlays from terrain/items atlases (instead of stone fallback cubes), creative page navigation now also supports mouse wheel + `ArrowUp`/`ArrowDown`, and creative no longer layers survival `inventory.png` beneath the selector grid (removed crafting-screen bleed-through).
+    - Movement follow-up: sprint keyboard modifier now applies while flying (including vertical ascent), so creative flight speed boost behavior is available in-client.
+    - Visual effects follow-up: added baseline first-person view bobbing during grounded movement and block-break particle bursts (textured mini-fragments using broken block atlas tiles) to close major immediate visual parity gaps.
+    - Item icon parity follow-up: replaced naive non-block icon index fallback (`item_id - 256`) with C++-anchored item-id-to-atlas tile mapping (based on `Item::staticCtor` texture names and `PreStitchedTextureMap` UV slots) for core legacy item IDs (`256..406`) plus records, reducing incorrect/purple-ish icon presentation in creative/hotbar paths.
+    - View bobbing stability follow-up: tuned bob amplitudes/frequency down and switched to frame-time-smoothed intensity with continuous phase sampling to remove aggressive/jittery camera motion.
+    - Inventory-tab/held-item follow-up: creative now includes a dedicated player-inventory tab button (plus `I` toggle) that opens the crafting/inventory screen without closing inventory UI, and first-person held rendering now uses the shared icon atlas path for held items (instead of stone/fist fallbacks for many non-block selections).
+    - Held-render/use-item follow-up: first-person held render path now splits by selected stack type (block/placeable items render as the 3D held mesh, non-block items render as icon overlay, fist only with empty hand), redstone dust item use now places wire (`55`) with top-surface support checks, and bucket semantics now support both pickup/use flows (empty bucket collects source water/lava into `326`/`327`; filled buckets place source fluids `8`/`10` and convert back to empty `325` in survival).
+    - Creative aux/order parity follow-up: expanded C++-anchored aux variant coverage in creative entry generation for building/decorations/misc tabs (sandstone variants, plank/log tree variants, smooth stone brick variants, monster egg host variants, quartz variants, slab sets, saplings/leaves/tall grass variants, wool + carpet color runs, cobble wall variants), while preserving brewing dynamic group ordering and aux metadata through selector-to-hotbar placement.
+    - Visual parity follow-up: inventory/crafting UI now render icon overlays for non-block outputs (fixing stone-cube fallback for recipe outputs like sticks) and aux-sensitive block selections fall back to icon rendering in hotbar/inventory/first-person where block-mesh path cannot express metadata variants; terrain block icon UV routing now applies C++-anchored aux tile mapping for key variant blocks (saplings, leaves, sandstone, wool/carpet, stone brick, quartz, etc.).
+    - First-person parity follow-up: corrected held-item transform constants to match `ItemInHandRenderer` non-map path (`0.7d/-0.65d/-0.9d` placement and `-swing3*20`, `-swing2*20`, `-swing2*80` rotations), and applied the 4J swing power factor (`4.0`) for non-map held-item swing timing.
+    - Redstone/placement parity follow-up: redstone wire world rendering now uses dedicated flat dust geometry (instead of full-cube stone fallback) with C++ atlas tiles (`redstoneDust_cross` / powered overlay region), and block-backed item mapping now includes repeater item `356 -> 93` in the shared placement path.
+    - Block atlas/render-shape parity follow-up: expanded `terrain_meshing` block-face UV mapping to cover broad C++ texture-name-set blocks from `Tile::setTextureName`/`PreStitchedTextureMap` (including ores/metals, quartz/end/nether sets, pumpkins/melon/mycelium/cactus, rails/repeater/pressure plates, decorative blocks, and fallback `id->atlas` routing for non-explicit legacy block ids), added flat-top rendering for rails/repeaters/pressure plates/lily pad/tripwire source and crossed-quad rendering for plant-style blocks (tallgrass/flowers/mushrooms/torch/crops/reeds/vine), and switched mesh face-culling tests to ignore non-occluding blocks so adjacent opaque cubes no longer lose faces next to decorative/utility blocks.
+    - Redstone-quartz id collision follow-up: moved powered-wire internal runtime id off vanilla block space (`REDSTONE_WIRE_POWERED_BLOCK_ID = 1000`) so quartz block id `155` now remains dedicated to quartz rendering/placement parity.
+    - Held-item/inventory-model parity follow-up: first-person non-block held items now follow the C++ `ItemInHandRenderer::renderItem3D` voxelized icon style (16x16 extruded icon mesh with `render` + `renderItem` transform chain), and survival inventory now renders a 3D player preview model using `HumanoidModel` part geometry/UV anchors (`head/body/arms/legs`) with mouse-driven yaw/pitch response ported from `InventoryScreen.cpp` (`xd/yd` atan rules for body/head look).
+    - Held-icon/hotbar/audio/particles parity follow-up: corrected held non-block icon UV sampling to per-pixel `renderItem3D` semantics (instead of center-texel fallback) and routed held icon meshes through blend-capable terrain/items materials so transparent pixels cut out correctly; matched GUI 3D item orientation closer to `ItemRenderer::renderGuiItem` by applying signed Z scale in hotbar/inventory model transforms; switched runtime sampler config to nearest on terrain/items/skin atlases; updated break-particle spawn toward `ParticleEngine::destroy` (`4x4x4` cell burst, C++-style randomized velocity normalization/lifetime, and tick-space gravity/drag); and expanded staged runtime audio (`click`, `btn_Back`, `pop`, `wood click`) with new UI/gameplay event hookups for inventory/pause/creative interactions, hotbar swaps/drops, and break/place actions.
+    - Audio-bank parity groundwork follow-up: runtime staging now includes original XACT banks (`Minecraft.xgs`, `minecraft.xsb`, `resident.xwb`, `streamed.xwb`, Title Update `additional.*`/`AdditionalMusic.xwb`, and `MenuSounds.*`) copied from legacy paths, and a dedicated probe tool (`src/bin/xact_bank_probe.rs`) now reports bank metadata/entry formats; probe results confirm big-endian XWB v46 with XMA miniwave entries (`format_tag=1`), documenting the exact decode blocker for full 1:1 cue playback.
+    - Creative/visual parity follow-up: restored C++ `IUIScene_CreativeMenu::staticCtor` tab labels/icons (`Structures`, `Redstone + Transport`, `Tools`, and canonical icon IDs), and added a `LevelRenderer::renderClouds`-anchored cloud baseline (legacy `environment/clouds.png` staging + camera-relative UV drift/update path).
+    - Cloud/water parity hotfix: cloud layer is now world-anchored (no longer camera-child, so pitch/yaw does not rotate sky geometry), clouds are hidden when the camera eye block is water (`isUnderLiquid(Material::water)` parity intent), and offline player movement now includes baseline water physics in collision mode (water swim-up impulse + drag/gravity branch from `LivingEntity::travel` constants) via a new `tick_with_collision_and_water` path used by the Bevy runtime.
+    - Particles/held-item parity follow-up: block-break particles now sample the C++ `TerrainParticle` texture path (`Tile::getTexture(0, data)` bottom-face tile, including random 4x4 subtile selection) instead of full per-face block UVs, and first-person held rendering now uses a C++-anchored projection baseline (`fov=70`, `near=0.05`) for closer-to-screen hand/item framing.
+    - Cloud/UI asset parity follow-up: cloud geometry now uses a non-flat shell baseline (top/bottom + perimeter sides with C++ `h=4` thickness intent from `renderAdvancedClouds`/`createCloudMesh`), runtime asset staging now includes `Common/Media/font/Mojangles.ttf`, and pause/death menu text paths now prefer staged Mojangles font handles (fallbacks preserved).
+    - Files: `src/client/creative_ui.rs`, `src/client/mod.rs`, `src/client/clouds.rs`, `src/client/particles.rs`, `src/bin/bevy_client.rs`, `src/client/asset_pipeline.rs`, `src/world/item_use.rs`, `src/world/simulation.rs`, `tests/client_creative_ui_integration.rs`, `tests/client_asset_pipeline_integration.rs`, `tests/client_clouds_integration.rs`, `tests/client_particles_integration.rs`, `tests/player_fluid_physics_integration.rs`, `tests/crafting_item_use_integration.rs`, `tests/client_inventory_ui_integration.rs`, `tests/client_interaction_integration.rs`, `docs/PARITY_MATRIX.md`, `docs/PORT_PLAN_V2.md`, `../../../AGENTS.md`
+    - Integration tests: `tests/client_creative_ui_integration.rs`, `tests/client_hotbar_ui_integration.rs`, `tests/client_inventory_ui_integration.rs`, `tests/client_clouds_integration.rs`, `tests/client_particles_integration.rs`, `tests/player_fluid_physics_integration.rs`, `tests/crafting_item_use_integration.rs`, `tests/client_interaction_integration.rs`, `tests/client_asset_pipeline_integration.rs`, `tests/terrain_meshing_integration.rs`, `tests/redstone_lifecycle_integration.rs`, `tests/spawn_movement_integration.rs`
+    - Validation: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_creative_ui_integration`, `cargo test --test client_hotbar_ui_integration`, `cargo test --test client_inventory_ui_integration`, `cargo test --test crafting_item_use_integration`, `cargo test --test client_interaction_integration`, `cargo test --test client_asset_pipeline_integration`, `cargo test --test terrain_meshing_integration`, `cargo test --test redstone_lifecycle_integration`, and `cargo test --test spawn_movement_integration` passed.
+    - Validation follow-up: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_asset_pipeline_integration`, `cargo test --test client_clouds_integration`, `cargo test --test client_hotbar_ui_integration`, `cargo test --test client_inventory_ui_integration`, `cargo test --test client_creative_ui_integration`, and `cargo test --test terrain_meshing_integration` passed.
+    - Validation closure: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_creative_ui_integration`, `cargo test --test client_clouds_integration`, `cargo test --test client_asset_pipeline_integration`, and `cargo test --features bevy_client` passed.
+    - Validation follow-up: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_clouds_integration`, `cargo test --test player_fluid_physics_integration`, and `cargo test --test spawn_movement_integration` passed (`cargo test --features bevy_client` currently blocked if `target/debug/bevy_client.exe` is running/locked by another process on Windows).
+    - Validation follow-up: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_particles_integration`, `cargo test --test terrain_meshing_integration`, `cargo test --test client_clouds_integration`, `cargo test --test player_fluid_physics_integration`, `cargo test --test spawn_movement_integration`, and `cargo test --test player_collision_integration` passed (`cargo test --features bevy_client --tests` currently blocked if `target/debug/bevy_client.exe` is running/locked by another process on Windows).
+    - Validation follow-up: `cargo fmt`, `cargo check --features bevy_client --bin bevy_client`, `cargo test --test client_asset_pipeline_integration`, `cargo test --test client_clouds_integration`, and `cargo test --test client_particles_integration` passed (`cargo test --features bevy_client --tests` currently blocked if `target/debug/bevy_client.exe` is running/locked by another process on Windows).
+
+## Completion Log
+- 2026-03-03: P0.1 completed (plan written).
+- 2026-03-03: P0.2 completed (tracker created).
+- 2026-03-03: M0.1 completed (fixed-step runtime + integration tests).
+- 2026-03-03: M0.2 completed (boot sequence scaffold + integration tests).
+- 2026-03-03: M0.3 completed (offline world bootstrap harness + integration tests).
+- 2026-03-03: M1.1 implemented (NBT baseline + integration tests); execution blocked pending MSVC linker availability.
+- 2026-03-03: M1.2 implemented (region storage baseline + integration tests); execution blocked pending MSVC linker availability.
+- 2026-03-03: M1.3 implemented (world save/load round-trip flow + integration tests); execution blocked pending MSVC linker availability.
+- 2026-03-03: MSVC toolchain detected and full `cargo test` now passes.
+- 2026-03-03: M2.1 completed (spawn and movement loop + integration tests).
+- 2026-03-03: M2.2 completed (break/place block persistence + integration tests).
+- 2026-03-03: M2.3 completed (offline gameplay smoke scenario + integration tests).
+- 2026-03-03: M3.1 completed (inventory/hotbar baseline + integration tests).
+- 2026-03-03: M4.0 completed (Bevy vertical slice app shell + interaction integration tests).
+- 2026-03-03: M4.1 completed (mouse-look + yaw-relative movement + targeting polish; fixed A/D inversion and horizontal camera inversion).
+- 2026-03-03: Post-M4.1 hotfix applied for live control feel (restored A/D mapping and yaw sign in Bevy client), tests still green.
+- 2026-03-03: M4.2 completed (chunk-window streaming + dynamic chunk load/unload visualization path).
+- 2026-03-03: M4.3.1 completed (original terrain texture staging baseline for Bevy runtime assets).
+- 2026-03-03: M4.3.2 completed (UI asset wiring via staged legacy GUI/icons textures in Bevy HUD overlay).
+- 2026-03-03: M4.3.3 completed (audio asset wiring via staged legacy click WAV playback on interaction).
+- 2026-03-03: M3.2 completed (crafting recipes + item-use placement consumption + hotbar selection wiring).
+- 2026-03-03: M3.3 completed (health/damage/death/respawn baseline with Bevy debug controls).
+- 2026-03-03: Post-M4.3 control hotfix applied (A/D mapping corrected again in Bevy client input path).
+- 2026-03-03: M4.4 completed (chunk terrain meshing + atlas UV mapping + chunk-boundary culling regression coverage).
+- 2026-03-03: WG.1 completed (deterministic worldgen scaffolding + `PerlinNoise`/`SimplexNoise` + `BiomeSource`/`BiomeDecorator` + `RandomLevelSource`/`HellRandomLevelSource`/`TheEndLevelRandomLevelSource` baselines with integration fixtures).
+- 2026-03-03: Bevy click-audio crash hotfix completed (skip unsupported WAV candidates during runtime asset staging); regression coverage added in `tests/client_asset_pipeline_integration.rs`.
+- 2026-03-03: Bevy audio decoder hotfix completed (enable WAV decoding feature in Bevy dependency to prevent click interaction panics from `UnrecognizedFormat`).
+- 2026-03-03: WG.2.1 completed (BiomeSource cache-path baseline with chunk-aligned biome index caching, temperature/downfall lookups, and cache decay integration coverage).
+- 2026-03-03: WG.2.2 completed (decorator/populator count-based baseline from biome rules + chunk load worldgen fallback generation path with persistence and integration coverage).
+- 2026-03-03: WG.2.3 completed (seeded reference fixture comparison harness derived from `BiomeDecorator` parity anchors in `LCE-Original/Minecraft.World`, with frozen fixture signatures).
+- 2026-03-03: WL.1 completed (chunk lifecycle/tick/weather scaffold with deterministic lifecycle event stream and integration coverage).
+- 2026-03-03: WL.2 completed (lifecycle controller wired into Bevy runtime chunk load/unload and fixed tick flow; streaming/lifecycle integration coverage added).
+- 2026-03-03: WL.3 completed (deterministic scheduled block/tile tick queue scaffold with due-time ordering and zero-delay semantics integration coverage).
+- 2026-03-03: WL.4 completed (lighting/weather lifecycle hook bridge wired into runtime with lifecycle event consumption and async world worker thread for chunk generation off the main thread).
+- 2026-03-03: EM.1 completed (entities/mobs data-path baseline scaffolding with entity registry, deterministic mob ticking, and mob damage/death session hooks + integration coverage).
+- 2026-03-03: Post-WL.4 chunk streaming performance hotfix completed (avoid repeated disk probes for pending async chunks, cap async chunk apply work per frame, and process worker request/cancel batches to reduce stale generation CPU churn); regression coverage expanded in `tests/client_world_worker_integration.rs`.
+- 2026-03-03: Post-WL.4 follow-up streaming hotfix completed (keep generated-but-not-yet-consumed chunks marked pending to prevent repeated disk probes, lower per-frame chunk probe/apply budgets, and shift generated-chunk persistence out of immediate apply path to unload/exit); regression coverage expanded in `tests/client_world_worker_integration.rs`.
+- 2026-03-03: Emergency streaming fallback completed (default chunk generation mode reverted to synchronous load/generate path to restore playability; async mode kept behind `LCE_ASYNC_CHUNK_GEN` flag while tuning continues); integration coverage expanded in `tests/client_chunk_streaming_integration.rs`.
+- 2026-03-03: Performance diagnostics pass completed (optional `LCE_PERF_LOG` timing logs for fixed tick + chunk streaming with per-phase timing breakdown, plus sync-mode generator reuse via system-local `RandomLevelSource` cache to avoid per-frame generator reinitialization); integration coverage expanded in `tests/client_chunk_streaming_integration.rs`.
+- 2026-03-03: Performance logging defaults updated (timing diagnostics now enabled by default with per-frame logging cadence unless `LCE_PERF_LOG` is explicitly set false/off/0); parsing coverage expanded in `tests/client_chunk_streaming_integration.rs`.
+- 2026-03-03: Startup hitch mitigation pass completed (sync-mode chunk loading now prioritizes nearest chunks and applies a strict per-frame sync chunk load budget to avoid single-frame 25-chunk bursts; perf logging now reports desired/deferred load counts for chunk-window diagnostics).
+- 2026-03-03: Runtime perf stabilization pass completed after log analysis (`perf.txt` showed fixed tick is healthy and chunk load/mesh is the bottleneck): reduced default chunk window radius to 1 (9 chunks) for lower startup/movement hitch pressure and enabled optimized dev profile defaults in `Cargo.toml` (`[profile.dev] opt-level=1`, `[profile.dev.package."*"] opt-level=3`) so local builds run substantially closer to playable performance while retaining debug symbols.
+- 2026-03-03: Sync chunk generation fallback removed by request; chunk streaming now always uses async generation worker path (sync branch, flag plumbing, and async-flag parser/tests removed) while keeping the current startup/perf throttles and diagnostics.
+- 2026-03-03: Controls/runtime UX pass completed by request: render distance default raised to 8 (`CHUNK_LOAD_RADIUS=8`), horizontal look direction inverted to match expected mouse handedness, cursor capture flow added (left click captures/hides cursor, `Esc` releases for upcoming menu flow), and block interaction now requires captured cursor to avoid accidental click-through on capture; strafe handedness regression coverage updated in `tests/client_interaction_integration.rs`.
+- 2026-03-03: Async chunk streaming perf hotfix after 8-radius log analysis (`perf.txt` showed main-thread storage payload probing/loading dominating frame time): chunk payload read/decode now runs on the world worker thread when save root is configured, chunk requests are queued directly (no main-thread payload probe path), and chunk apply now uses `BlockWorld::replace_chunk_blocks` for lower per-chunk apply overhead; regression coverage expanded with storage-backed worker test in `tests/client_world_worker_integration.rs`.
+- 2026-03-03: Render distance default adjusted by request to `CHUNK_LOAD_RADIUS=2` for sane startup/playability defaults while keeping async chunk path and diagnostics in place.
+- 2026-03-03: GP.1 completed (fluids tick/scheduling baseline scaffold): added `world::fluids` water/lava scheduling/flow helpers, wired fluid tick scheduling on fluid placement and runtime scheduled-tick consumption in Bevy hooks, and added integration coverage for fluid scheduling/flow plus chunk replacement/storage-worker regressions.
+- 2026-03-03: Runtime testing UX pass completed: world boot now aligns to default daytime (`day_time=6000`) for brighter startup testing visibility, and player movement now supports creative-style double-tap jump flight toggle (double-tap Space to enable/disable flight) in offline simulation; integration coverage expanded in `tests/spawn_movement_integration.rs` and `tests/client_lifecycle_hooks_integration.rs`.
+- 2026-03-03: GP.2 completed (redstone-like logic baseline scaffold): added deterministic redstone component tick model (`wire`/`torch`/`repeater` + block-change scheduling hooks), wired runtime scheduled-tick consumption in Bevy lifecycle hooks, and added end-to-end integration coverage in `tests/redstone_lifecycle_integration.rs`.
+- 2026-03-03: GP.3.1 completed (player solid-block collision/physics baseline): added deterministic player AABB collision resolution with per-axis sweep, integrated solid-block collision checks into Bevy fixed-tick simulation using loaded chunk block state, and marked fluids/redstone micro-blocks as non-solid for movement checks; integration coverage added in `tests/player_collision_integration.rs`.
+- 2026-03-03: GP.3.2a completed (movement/input edge-case baseline): aligned jump/fly behavior to C++ reference semantics (`Mob::jumpFromGround` 0.42 impulse and `LocalPlayer` jump-trigger window/release flow), added block placement overlap guard against player collider, and clamped surface decorator Y placement to world bounds; regression coverage expanded in `tests/spawn_movement_integration.rs` and `tests/client_interaction_integration.rs`.
+- 2026-03-03: GP.3.2b (partial) lifecycle corner-case pass completed: scheduled tick queue now dedupes duplicate `(kind, block, payload)` requests and supports earlier re-scheduling without accumulating redundant ticks; integration coverage expanded in `tests/world_lifecycle_integration.rs`.
+- 2026-03-03: GP.3.2b follow-up completed (lifecycle/decorator corner-case pass): unloading a chunk now purges pending + triggered scheduled ticks for that chunk and clears stale chunk tick counters, while decorator coverage now enforces chunk-bound and world-height placement invariants in integration tests.
+- 2026-03-03: GP.3.2c terrain rendering corner-case pass completed: enabled nearest-neighbor texture sampling for pixel-art atlas rendering, corrected side-face UV orientation to prevent rotated grass-side appearance, and applied UV inset to reduce adjacent-tile bleed/shimmer; coverage expanded in `tests/terrain_meshing_integration.rs`.
+- 2026-03-03: Grass-top shading parity follow-up completed: top face tint now uses LCE colour-table common grass value (`0x7cbd6b`) to match C++ renderer behavior where grass top is colorized via block color multiplier rather than a fixed green atlas texel.
+- 2026-03-03: M4 UI parity completion reopened by request; M4.5.1 completed with live hotbar HUD synchronization (selected-slot highlight, item labels, and stack counts) wired to runtime inventory state, plus integration coverage in `tests/client_hotbar_ui_integration.rs`.
+- 2026-03-03: M4.5.2 completed (inventory screen + cursor handoff/capture flow): added toggleable inventory overlay (`E` open/close), explicit cursor release/capture handoff behavior between gameplay and UI focus, gameplay-overlay visibility switching while inventory is open, and integration coverage in `tests/client_inventory_ui_integration.rs`.
+- 2026-03-03: M4.5.2 parity fix pass (C++-anchored UI texture/layout): removed duplicate hotbar layering, aligned hotbar frame/selection-slot geometry to `Minecraft.Client/Gui.cpp` blit coordinates (`182x22` bar + `24x22` selection), and switched inventory panel background staging/rendering to legacy `gui/inventory.png` (matching `InventoryScreen`/`InventoryMenu` slot layout coordinates) to avoid incorrect `gui.png` sub-rect rendering.
+- 2026-03-03: GP.3.2b decorator parity follow-up completed: ported `Minecraft.World/BiomeDecorator.cpp` placement-window behavior (`x/z = chunk origin + nextInt(16) + 8`) and nested liquid spring depth sampling for water/lava, then wired surface-feature height lookup to world coordinates in `RandomLevelSource`; integration coverage updated in `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, and `tests/worldgen_noise_integration.rs`.
+- 2026-03-03: GP.3.2b decorator biome-specific parity follow-up completed: ported pumpkin chance (`1/32`), desert-well chance (`1/1000` for desert biome), top-solid vs heightmap placement semantics, waterlily descent-style Y selection, and brown-mushroom heightmap attempt behavior from `Minecraft.World/BiomeDecorator.cpp`/`DesertBiome.cpp`; integration coverage expanded in `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, and `tests/worldgen_noise_integration.rs`.
+- 2026-03-03: GP.3.2b decorator ore parity follow-up completed: ported `BiomeDecorator::decorateOres` attempt counts/depth distributions (`depthSpan` and lapis `depthAverage`) and ore coordinate window semantics (no `+8` offset) from `Minecraft.World/BiomeDecorator.cpp`; integration coverage expanded in `tests/worldgen_decorator_integration.rs`, `tests/worldgen_reference_fixture_integration.rs`, and `tests/worldgen_noise_integration.rs`.
+- 2026-03-03: GP.3.2b fluid rendering follow-up completed: fixed transparent chunk seam artifacts by switching fluid draw submission from per-chunk transparent entities to a merged global fluid mesh pass, while keeping chunk-local opaque terrain meshes; water/lava vertex alpha tint now defers to original atlas alpha to better match LCE appearance.
+- 2026-03-03: GP.3.2b fluid visual/interaction parity follow-up completed: ported fluid mesh behavior toward `TileRenderer::tesselateWaterInWorld` + `getWaterHeight` semantics (sloped liquid surfaces, flow-oriented top UVs, side-height UV mapping, translucency), and updated interaction placement rules so right-click placement can replace fluid blocks like legacy behavior; regression coverage expanded in `tests/terrain_meshing_integration.rs` and `tests/client_interaction_integration.rs`.
+- 2026-03-03: GP.3.2b fluid simulation parity follow-up completed: added C++-anchored `LiquidTile` dynamic/static update behavior in Rust (fluid depth metadata, downhill + slope spread, decay/evaporation, static-water neighbor reactivation, and lava-water stone conversion), wired block-change neighbor fluid scheduling in the Bevy interaction path, and expanded integration coverage in `tests/fluids_lifecycle_integration.rs`.
+- 2026-03-03: GP.3.2b nether/end decorator-source parity follow-up completed: `HellRandomLevelSource` now emits biome-decorator outputs, and `TheEndLevelRandomLevelSource` now emits End biome special markers aligned to `TheEndBiomeDecorator` chunk triggers (8 spike chunks, origin dragon spawn marker, `(-16,-16)` podium marker) while retaining End ore-pass behavior; integration coverage added in `tests/worldgen_end_decorator_integration.rs`.
+- 2026-03-04: GP.3.2b remaining corner-case sweep closed: reverted the temporary chunk-local fluid meshing experiment to preserve cross-chunk water surface parity, added queued chunk-mesh rebuild budgeting (`LCE_MESH_REBUILD_BUDGET`) to prevent bursty neighbor rebuild spikes during streaming, and added targeted mesh-rebuild spike diagnostics (`LCE_MESH_REBUILD_WARN_MS`, `LCE_WATER_DEBUG`) for hotspot triage.
+- 2026-03-04: GP.3 marked complete in tracker (all GP.3.2 sub-passes closed); active phase moved back to `M4.5` gameplay UI parity follow-up.
+- 2026-03-04: M4.5.3 completed (crafting UI wiring against backend recipes): inventory screen now exposes recipe buttons in the C++ inventory crafting panel region, click-to-craft is wired to `world::crafting` outcomes, recipe affordances are live-updated from inventory state, and recipe outputs render via the existing 3D UI item overlay path; integration coverage added in `tests/client_crafting_ui_integration.rs`.
+- 2026-03-04: M4.5.4 completed (health/death/respawn HUD + pause/menu baseline): added pause menu and death screen overlays with button wiring (`Back to game`, `Save and quit to title`, `Respawn`, `Title menu`), integrated escape/cursor-capture handoff semantics for inventory vs pause flows, and paused fixed-tick simulation while the pause menu is open in offline play.
+- 2026-03-04: M4.5.5 in-progress baseline pass started: added `client::creative_ui` helper/state module from `Minecraft.Client/Common/UI/IUIScene_CreativeMenu` anchors (tab order/titles, 5x10 selector paging scaffold, and quick-slot placement preference semantics), wired Bevy creative overlay/tabs/selector interactions and creative quick-slot model rendering for `allow_flight` inventory flow.
+- 2026-03-04: M4.5.5 crash hotfix: fixed Bevy query disjointness panic (`B0001`) in `sync_creative_inventory_ui` by adding explicit `Without<...>` filter separation for creative tab/selector/hotbar color queries; startup smoke and creative UI integration tests pass.
+- 2026-03-04: M4.5.5 creative visibility/parity hotfix: replaced creative selector/hotbar 3D model overlay path with direct terrain-atlas icon rendering (`ImageNode` rects from `atlas_tile_for_block_face`) to ensure items are visible in creative slots, and added inventory texture staging guardrails that reject screenshot-sized PNGs (`!= 256x256`) so runtime `inventory.png` stays on legacy atlas assets.
+- 2026-03-04: M4.5.5 pause/death text parity follow-up: staged legacy bitmap font atlas candidates (`res/font/default.png`) into runtime assets and switched pause/death static menu labels to bitmap glyph rendering path (8x8 atlas glyph quads) with automatic fallback to Bevy text when the font atlas is unavailable.
+- 2026-03-04: M4.5.5 creative stack semantics fix: creative pickup now uses full stacks (`64`), block placement no longer consumes selected stack while `allow_flight` is enabled, and `Q` hotbar drop decrements one item to mirror expected creative drop behavior.
+- 2026-03-04: M4.5.5 creative catalog expansion pass: ported broad base creative tab item-id coverage from `Minecraft.Client/Common/UI/IUIScene_CreativeMenu.cpp` into Rust creative tab data and expanded placement mapping in `world::item_use` to support general tile-id item placement plus key block-backed item ids.
+- 2026-03-04: M4.5.5 creative icon atlas parity follow-up: staged legacy `gui/items.png` into runtime assets and switched creative icon rendering to choose terrain vs items atlas per item id (`block<=255`, `item>=256`, records mapped to legacy record icon tiles), fixing the "all stone icons" regression for non-block entries.
+- 2026-03-04: M4.5.5 creative tab icon/order parity follow-up: switched creative tab buttons from placeholder letter labels to representative tab item icons using the staged terrain/items atlases (`Structures=1`, `Decoration=397`, `Redstone+Transport=66`, `Materials=263`, `Food=260`, `Tools=345`, `Brewing=384`, `Misc=54`), and reordered `Redstone + Transport` entries to match the legacy static group order (`Transport` before `Redstone`).
+- 2026-03-04: M4.5.5 creative input parity follow-up: added per-tab creative page/dynamic-group state persistence (aligned to C++ `m_tabPage`/`m_tabDynamicPos` behavior), wired `PageUp` to cycle brewing dynamic groups with wrap semantics, and kept keyboard page traversal via `Shift+PageUp` (previous page) and `PageDown` (next page).
+- 2026-03-04: M4.5.5 creative HUD/input parity hotfix: gameplay hotbar now renders item-id (`>255`) stacks via terrain/items icon overlays instead of 3D stone fallback meshes, creative page navigation now accepts mouse-wheel and `ArrowUp`/`ArrowDown` page input, and the creative panel now layers staged legacy `inventory.png` art beneath controls for closer visual baseline parity.
+- 2026-03-04: M4.5 movement follow-up hotfix: sprint modifier now engages while creative flight is active (not only while running forward on ground), restoring sprint-speed application during flight movement/ascent.
+- 2026-03-04: M4.5 visual feedback follow-up: added grounded first-person view bobbing and block-break particle bursts (short-lived textured block fragments) in the Bevy client to cover major missing gameplay feedback cues.
+- 2026-03-04: M4.5 item icon parity hotfix: ported a C++-anchored item icon tile table for legacy item IDs (`256..406`) from `Item::staticCtor` + `PreStitchedTextureMap`, replacing the previous `item_id - 256` fallback so creative/hotbar non-block icons align with legacy atlas coordinates.
+- 2026-03-04: M4.5 view bobbing tuning hotfix: reduced bob amplitude/frequency and added frame-time-smoothed bob intensity with continuous phase sampling to resolve overly aggressive/jittery camera bob behavior.
+- 2026-03-04: M4.5 creative/inventory UX hotfix: removed accidental survival-inventory texture overlay from the creative panel, added a dedicated creative-to-player-inventory tab toggle (`I` shortcut + tab button), and updated survival inventory visibility/crafting gating so creative players can access crafting/inventory view without leaving inventory UI.
+- 2026-03-04: M4.5 first-person held-item hotfix: switched held-item presentation to atlas-driven icon rendering for selected stacks in gameplay view, preventing non-block items from collapsing to fist and many block selections from appearing as stone fallback meshes.
+- 2026-03-04: M4.5 held-item/inventory-model parity follow-up: replaced first-person non-block flat icon overlay with C++-anchored `ItemInHandRenderer::renderItem3D` voxel icon mesh + transform path (keeping overlay as fallback only when icon mesh data is unavailable), added staged legacy `mob/char.png` runtime skin sourcing, and added survival inventory 3D player preview rendering with `HumanoidModel`-anchored part geometry/UVs and `InventoryScreen.cpp` mouse-look yaw/pitch semantics.
+- 2026-03-04: M4.5 held-icon/audio/particles follow-up: fixed held non-block texture corruption by switching to per-pixel voxel UV sampling + blend-capable icon materials (matching `renderItem3D` expectations), aligned GUI hotbar/inventory item model handedness with signed-Z GUI transform semantics, ported break-particle burst behavior closer to `ParticleEngine::destroy` (`4x4x4` burst + randomized lifetime/velocity + tick-space gravity/drag), and expanded runtime audio staging/event wiring to include `btn_Back`/`pop`/`wood click` alongside click for menu and gameplay interactions.
+- 2026-03-04: M4.5 XACT bank staging/probe follow-up: staged legacy XACT bank artifacts into runtime audio banks (`minecraft`/`resident`/`streamed` + TitleUpdate + MenuSounds), added `xact_bank_probe` for reproducible bank introspection, and verified core banks are big-endian XWB v46 with XMA-encoded entry formats, establishing the remaining 1:1 audio parity dependency as XMA decode + XSB cue-table mapping.
+- 2026-03-04: M4.5.5 creative/cloud parity validation closure: fixed `Structures` tab-label parity regression (`IUIScene_CreativeMenu::staticCtor` anchor), added `LevelRenderer::renderClouds`-anchored helper/tests and legacy `environment/clouds.png` staging path, introduced `docs/PARITY_MATRIX.md` as subsystem status source-of-truth, and re-validated with targeted UI/cloud/asset integration tests plus full `cargo test --features bevy_client`.
+- 2026-03-04: M4.5.5 cloud/water behavior hotfix: moved cloud rendering off camera-child transform to world-anchored tracking (fixes pitch/yaw-coupled sky drift), added underwater cloud culling when camera eye is inside water, and added baseline player water physics for collision-mode runtime (`swim` upward impulse + water drag/gravity branch) with new integration coverage in `tests/player_fluid_physics_integration.rs`.
+- 2026-03-04: M4.5.5 particle/held-view parity hotfix: confirmed C++ `TerrainParticle` uses `Tile::getTexture(0, data)` and aligned break-particle UV selection to bottom-face 4x4 subtile sampling; adjusted first-person held-item camera projection to C++ baseline framing (`fov=70`, `near=0.05`) to restore close-to-screen hand/item placement.
+- 2026-03-04: M4.5.5 Mojangles/cloud-shell follow-up: staged legacy `Common/Media/font/Mojangles.ttf` in runtime asset pipeline and switched pause/death menu text paths to prefer Mojangles font handles; replaced flat cloud plane mesh with a non-flat shell baseline (top/bottom + perimeter sides, C++ `h=4` intent) so clouds no longer render as a single flat sheet.
