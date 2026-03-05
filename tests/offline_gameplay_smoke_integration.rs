@@ -22,6 +22,7 @@ fn offline_gameplay_smoke_round_trip() {
             strafe: 0.0,
             forward: 1.0,
             jump: tick == 5,
+            sneak: false,
         });
     }
 

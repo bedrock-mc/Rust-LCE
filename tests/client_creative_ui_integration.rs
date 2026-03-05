@@ -44,11 +44,13 @@ fn creative_tabs_follow_legacy_order_and_titles() {
 #[test]
 fn redstone_transport_tab_matches_legacy_group_order() {
     let redstone_transport = creative_tab_items(CreativeInventoryTab::RedstoneAndTransport);
-    assert!(redstone_transport.len() > 9);
+    assert!(redstone_transport.len() > 12);
     assert_eq!(redstone_transport[0], 66);
     assert_eq!(redstone_transport[1], 27);
-    assert_eq!(redstone_transport[8], 333);
-    assert_eq!(redstone_transport[9], 23);
+    assert_eq!(redstone_transport[8], 408);
+    assert_eq!(redstone_transport[11], 333);
+    assert_eq!(redstone_transport[12], 23);
+    assert!(redstone_transport.contains(&404));
 }
 
 #[test]
@@ -252,13 +254,52 @@ fn decoration_and_misc_aux_variants_follow_legacy_scaffold_order() {
     assert_eq!(decoration_entries[wool_index + 2].aux, 4);
     assert_eq!(decoration_entries[wool_index + 3].aux, 5);
 
-    let misc_entries = creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Misc, 0);
-    let wall_index = misc_entries
+    let building_entries =
+        creative_tab_entries_for_dynamic_group(CreativeInventoryTab::BuildingBlocks, 0);
+    let wall_index = building_entries
         .iter()
         .position(|entry| entry.item_id == 139)
         .expect("cobble wall should be present");
-    assert_eq!(misc_entries[wall_index].aux, 0);
-    assert_eq!(misc_entries[wall_index + 1].aux, 1);
+    assert_eq!(building_entries[wall_index].aux, 0);
+    assert_eq!(building_entries[wall_index + 1].aux, 1);
+
+    let misc_entries = creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Misc, 0);
+
+    let spawn_egg_aux: Vec<u16> = misc_entries
+        .iter()
+        .filter(|entry| entry.item_id == 383)
+        .map(|entry| entry.aux)
+        .collect();
+    assert!(spawn_egg_aux.contains(&65));
+    assert!(spawn_egg_aux.contains(&66));
+    assert!(spawn_egg_aux.contains(&100));
+    assert!(spawn_egg_aux.contains(&8292));
+    assert!(spawn_egg_aux.contains(&12388));
+
+    let firework_aux: Vec<u16> = misc_entries
+        .iter()
+        .filter(|entry| entry.item_id == 401)
+        .map(|entry| entry.aux)
+        .collect();
+    assert_eq!(firework_aux, vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn tools_tab_includes_legacy_horse_and_book_entries() {
+    let tool_items = creative_tab_items(CreativeInventoryTab::ToolsWeaponsArmor);
+    assert!(tool_items.contains(&395));
+    assert!(tool_items.contains(&420));
+    assert!(tool_items.contains(&419));
+    assert!(tool_items.contains(&418));
+    assert!(tool_items.contains(&417));
+
+    let tool_entries =
+        creative_tab_entries_for_dynamic_group(CreativeInventoryTab::ToolsWeaponsArmor, 0);
+    let enchanted_books = tool_entries
+        .iter()
+        .filter(|entry| entry.item_id == 403)
+        .count();
+    assert_eq!(enchanted_books, 22);
 }
 
 #[test]

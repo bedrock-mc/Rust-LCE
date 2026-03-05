@@ -24,6 +24,7 @@ pub const PLAYER_COLLIDER_HALF_WIDTH: f32 = 0.3;
 pub const PLAYER_COLLIDER_HEIGHT: f32 = 1.8;
 pub const SPRINT_SPEED_MULTIPLIER: f32 = 1.3;
 pub const SPRINT_DURATION_TICKS: u16 = 20 * 30;
+pub const PLAYER_MAX_FOOD: i16 = 20;
 
 const COLLISION_EPSILON: f32 = 0.001;
 const COLLISION_SOLVER_STEPS: u8 = 10;
@@ -60,6 +61,7 @@ pub struct MovementInput {
     pub strafe: f32,
     pub forward: f32,
     pub jump: bool,
+    pub sneak: bool,
 }
 
 impl MovementInput {
@@ -81,9 +83,15 @@ pub struct PlayerState {
     pub allow_flight: bool,
     pub is_flying: bool,
     pub is_sprinting: bool,
+    pub is_sneaking: bool,
+    pub is_riding: bool,
     pub inventory: PlayerInventory,
     pub health: i16,
     pub max_health: i16,
+    pub food_level: i16,
+    pub food_saturation_level: f32,
+    pub experience_progress: f32,
+    pub experience_level: i32,
     pub is_dead: bool,
 }
 
@@ -96,9 +104,15 @@ impl PlayerState {
             allow_flight: true,
             is_flying: false,
             is_sprinting: false,
+            is_sneaking: false,
+            is_riding: false,
             inventory: PlayerInventory::new(),
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
+            food_level: PLAYER_MAX_FOOD,
+            food_saturation_level: 5.0,
+            experience_progress: 0.0,
+            experience_level: 0,
             is_dead: false,
         }
     }
@@ -300,6 +314,8 @@ impl OfflineGameSession {
 
         if self.player.is_dead {
             self.player.is_sprinting = false;
+            self.player.is_sneaking = false;
+            self.player.is_riding = false;
             self.sprint_time = 0;
             self.entities
                 .tick_mobs(self.world.tick_count, self.ground_y);
@@ -325,11 +341,11 @@ impl OfflineGameSession {
             }
         } else {
             self.player.is_flying = false;
-            self.player.is_sprinting = false;
             self.jump_trigger_time = 0;
-            self.sprint_time = 0;
             self.two_jumps_registered = false;
         }
+
+        self.player.is_sneaking = input.sneak && !self.player.is_flying;
 
         let sprint_multiplier = if self.player.is_sprinting {
             SPRINT_SPEED_MULTIPLIER
@@ -341,6 +357,9 @@ impl OfflineGameSession {
             && player_intersects_water(self.player.position, &mut is_water_block);
         let (strafe, forward) = input.normalized_axis();
         let mut horizontal_speed = WALK_SPEED_BLOCKS_PER_SECOND * sprint_multiplier;
+        if self.player.is_sneaking {
+            horizontal_speed *= 0.3;
+        }
         if in_water {
             horizontal_speed *= WATER_MOVE_SPEED_MULTIPLIER;
         }
@@ -455,6 +474,8 @@ impl OfflineGameSession {
             self.player.velocity = Vec3::ZERO;
             self.player.is_flying = false;
             self.player.is_sprinting = false;
+            self.player.is_sneaking = false;
+            self.player.is_riding = false;
             self.sprint_time = 0;
             self.jump_trigger_time = 0;
             self.two_jumps_registered = false;
@@ -479,6 +500,8 @@ impl OfflineGameSession {
         self.player.on_ground = true;
         self.player.is_flying = false;
         self.player.is_sprinting = false;
+        self.player.is_sneaking = false;
+        self.player.is_riding = false;
         self.sprint_time = 0;
         self.player.health = self.player.max_health;
         self.player.is_dead = false;

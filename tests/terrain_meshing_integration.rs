@@ -173,6 +173,10 @@ fn redstone_wire_uses_redstone_tiles_instead_of_stone_fallback() {
         atlas_tile_for_block_face(REDSTONE_WIRE_BLOCK_ID, BlockFace::North),
         (4, 10)
     );
+    assert_eq!(
+        atlas_tile_for_block_face(REDSTONE_WIRE_POWERED_BLOCK_ID, BlockFace::Top),
+        (4, 10)
+    );
 }
 
 #[test]
@@ -183,11 +187,24 @@ fn redstone_wire_mesh_renders_as_flat_top_quad_not_cube() {
     let mesh =
         build_chunk_mesh_data(&world, ChunkPos::new(0, 0)).expect("mesh should be generated");
 
-    assert_eq!(mesh.positions.len(), 4);
-    assert_eq!(mesh.indices.len(), 6);
+    assert_eq!(mesh.positions.len(), 8);
+    assert_eq!(mesh.indices.len(), 12);
 
     let y_values = mesh.positions.iter().map(|position| position[1]);
     assert!(y_values.into_iter().all(|y| y > 64.0 && y < 65.0));
+
+    let min_x = mesh
+        .positions
+        .iter()
+        .map(|position| position[0])
+        .fold(f32::INFINITY, f32::min);
+    let max_x = mesh
+        .positions
+        .iter()
+        .map(|position| position[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(min_x > 0.0);
+    assert!(max_x < 1.0);
 }
 
 #[test]
@@ -205,7 +222,143 @@ fn quartz_block_id_uses_quartz_tiles_not_redstone_internal_powered_id() {
 
     assert_eq!(
         atlas_tile_for_block_face(REDSTONE_WIRE_POWERED_BLOCK_ID, BlockFace::Top),
-        (4, 11),
-        "internal powered redstone wire id should still map to redstone powered overlay"
+        (4, 10),
+        "internal powered redstone wire id should still map to redstone base texture"
     );
+}
+
+#[test]
+fn redstone_wire_mesh_applies_lit_and_unlit_tints() {
+    let mut unlit_world = BlockWorld::new();
+    unlit_world.place_block(BlockPos::new(0, 64, 0), REDSTONE_WIRE_BLOCK_ID);
+
+    let unlit_mesh =
+        build_chunk_mesh_data(&unlit_world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+    assert_eq!(unlit_mesh.colors[0], [76.0 / 255.0, 0.0, 0.0, 1.0]);
+
+    let mut lit_world = BlockWorld::new();
+    lit_world.place_block(BlockPos::new(0, 64, 0), REDSTONE_WIRE_POWERED_BLOCK_ID);
+
+    let lit_mesh =
+        build_chunk_mesh_data(&lit_world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+    assert_eq!(lit_mesh.colors[0], [1.0, 50.0 / 255.0, 0.0, 1.0]);
+}
+
+#[test]
+fn adjacent_redstone_wires_extend_toward_connected_neighbor() {
+    let mut isolated_world = BlockWorld::new();
+    isolated_world.place_block(BlockPos::new(0, 64, 0), REDSTONE_WIRE_BLOCK_ID);
+    let isolated = build_chunk_mesh_data(&isolated_world, ChunkPos::new(0, 0))
+        .expect("mesh should be generated");
+    let isolated_max_x = isolated
+        .positions
+        .iter()
+        .map(|position| position[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    let mut connected_world = BlockWorld::new();
+    connected_world.place_block(BlockPos::new(0, 64, 0), REDSTONE_WIRE_BLOCK_ID);
+    connected_world.place_block(BlockPos::new(1, 64, 0), REDSTONE_WIRE_BLOCK_ID);
+    let connected = build_chunk_mesh_data(&connected_world, ChunkPos::new(0, 0))
+        .expect("mesh should be generated");
+    let connected_max_x = connected
+        .positions
+        .iter()
+        .filter(|position| position[0] <= 1.0)
+        .map(|position| position[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    assert!(isolated_max_x < 1.0);
+    assert!(
+        (connected_max_x - 1.0).abs() < 0.0001,
+        "wire should extend to shared block edge when connected"
+    );
+}
+
+#[test]
+fn torch_and_lever_meshes_are_not_full_cubes() {
+    let mut world = BlockWorld::new();
+
+    let torch = BlockPos::new(0, 64, 0);
+    world.place_block(torch, 50);
+    world.set_block_data(torch, 5);
+
+    let lever = BlockPos::new(2, 64, 0);
+    world.place_block(lever, 69);
+    world.set_block_data(lever, 5);
+
+    let mesh =
+        build_chunk_mesh_data(&world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+
+    let torch_x = mesh
+        .positions
+        .iter()
+        .filter(|position| position[0] >= 0.0 && position[0] <= 1.0)
+        .map(|position| position[0])
+        .collect::<Vec<_>>();
+    let lever_x = mesh
+        .positions
+        .iter()
+        .filter(|position| position[0] >= 2.0 && position[0] <= 3.0)
+        .map(|position| position[0])
+        .collect::<Vec<_>>();
+
+    let torch_width = torch_x.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        - torch_x.iter().cloned().fold(f32::INFINITY, f32::min);
+    let lever_width = lever_x.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        - lever_x.iter().cloned().fold(f32::INFINITY, f32::min);
+
+    assert!(torch_width < 0.35);
+    assert!(lever_width < 0.6);
+}
+
+#[test]
+fn piston_mesh_respects_block_data_facing_for_front_texture() {
+    let mut world = BlockWorld::new();
+    let piston = BlockPos::new(0, 64, 0);
+    world.place_block(piston, 33);
+    world.set_block_data(piston, 5);
+
+    let mesh =
+        build_chunk_mesh_data(&world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+
+    let top_uvs = mesh
+        .positions
+        .iter()
+        .zip(mesh.normals.iter())
+        .zip(mesh.uvs.iter())
+        .filter(|((position, normal), _)| {
+            (normal[1] - 1.0).abs() < 0.0001 && (position[1] - 65.0).abs() < 0.0001
+        })
+        .map(|((_, _), uv)| *uv)
+        .collect::<Vec<_>>();
+    assert!(!top_uvs.is_empty());
+    assert!(top_uvs.iter().all(|uv| uv_in_tile(*uv, 12, 6)));
+
+    let east_uvs = mesh
+        .positions
+        .iter()
+        .zip(mesh.normals.iter())
+        .zip(mesh.uvs.iter())
+        .filter(|((position, normal), _)| {
+            (normal[0] - 1.0).abs() < 0.0001 && (position[0] - 1.0).abs() < 0.0001
+        })
+        .map(|((_, _), uv)| *uv)
+        .collect::<Vec<_>>();
+    assert!(!east_uvs.is_empty());
+    assert!(east_uvs.iter().all(|uv| uv_in_tile(*uv, 11, 6)));
+}
+
+fn uv_in_tile(uv: [f32; 2], tile_x: u8, tile_y: u8) -> bool {
+    let tile = 1.0 / 16.0;
+    let inset = 0.001;
+    let u_min = f32::from(tile_x) * tile + inset;
+    let u_max = (f32::from(tile_x) + 1.0) * tile - inset;
+    let v_min = f32::from(tile_y) * tile + inset;
+    let v_max = (f32::from(tile_y) + 1.0) * tile - inset;
+
+    uv[0] >= u_min - 0.0001
+        && uv[0] <= u_max + 0.0001
+        && uv[1] >= v_min - 0.0001
+        && uv[1] <= v_max + 0.0001
 }

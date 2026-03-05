@@ -644,22 +644,22 @@ pub fn default_icons_candidates(base_dir: &Path) -> Vec<PathBuf> {
             .join("ui")
             .join("icons.png"),
     );
-    append_local_common_candidates(&mut candidates, base_dir, &["res", "gui", "icons.png"]);
-    append_local_common_candidates(
+    append_source_client_candidates(
         &mut candidates,
         base_dir,
-        &["res", "1_2_2", "gui", "icons.png"],
+        &["Common", "res", "1_2_2", "gui", "icons.png"],
     );
     append_source_client_candidates(
         &mut candidates,
         base_dir,
         &["Common", "res", "gui", "icons.png"],
     );
-    append_source_client_candidates(
+    append_local_common_candidates(
         &mut candidates,
         base_dir,
-        &["Common", "res", "1_2_2", "gui", "icons.png"],
+        &["res", "1_2_2", "gui", "icons.png"],
     );
+    append_local_common_candidates(&mut candidates, base_dir, &["res", "gui", "icons.png"]);
     candidates.push(
         base_dir
             .join("..")
@@ -668,6 +668,7 @@ pub fn default_icons_candidates(base_dir: &Path) -> Vec<PathBuf> {
             .join("Minecraft.Client")
             .join("Common")
             .join("res")
+            .join("1_2_2")
             .join("gui")
             .join("icons.png"),
     );
@@ -679,7 +680,6 @@ pub fn default_icons_candidates(base_dir: &Path) -> Vec<PathBuf> {
             .join("Minecraft.Client")
             .join("Common")
             .join("res")
-            .join("1_2_2")
             .join("gui")
             .join("icons.png"),
     );

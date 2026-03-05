@@ -21,6 +21,7 @@ fn damage_can_kill_player_and_freezes_movement_until_respawn() {
         strafe: 0.0,
         forward: 1.0,
         jump: true,
+        sneak: false,
     });
     assert_eq!(game.player().position, before);
 }

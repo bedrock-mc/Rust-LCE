@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::world::{
     BlockPos, BlockWorld, ChunkPos, FluidKind, LAVA_FLOWING_BLOCK_ID, LAVA_SOURCE_BLOCK_ID,
     REDSTONE_WIRE_BLOCK_ID, REDSTONE_WIRE_POWERED_BLOCK_ID, WATER_FLOWING_BLOCK_ID,
-    WATER_SOURCE_BLOCK_ID, fluid_kind_for_block, is_fluid_block,
+    WATER_SOURCE_BLOCK_ID, fluid_kind_for_block, is_fluid_block, is_redstone_block,
 };
 
 pub const TERRAIN_ATLAS_TILES: u8 = 16;
@@ -15,6 +15,11 @@ const FLUID_FACE_OFFSET: f32 = 0.001;
 const FARMLAND_BLOCK_ID: u16 = 60;
 const REDSTONE_WIRE_RENDER_OFFSET: f32 = 0.015625;
 const FLAT_TILE_RENDER_OFFSET: f32 = 0.015625;
+const REDSTONE_WIRE_UNLIT_TINT: [f32; 4] = [76.0 / 255.0, 0.0, 0.0, 1.0];
+const REDSTONE_WIRE_LIT_TINT: [f32; 4] = [1.0, 50.0 / 255.0, 0.0, 1.0];
+const REDSTONE_WIRE_CUT_DISTANCE: f32 = 5.0 / 16.0;
+const BREAK_OVERLAY_ALPHA: f32 = 0.5;
+const BREAK_OVERLAY_NORMAL_OFFSET: f32 = 0.002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockFace {
@@ -50,6 +55,26 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
             continue;
         }
 
+        if block_id == REDSTONE_WIRE_BLOCK_ID || block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
+            append_redstone_wire(world, &mut mesh, block_pos, block_id);
+            continue;
+        }
+
+        if is_torch_block(block_id) {
+            append_torch(world, &mut mesh, block_pos, block_id);
+            continue;
+        }
+
+        if block_id == 69 {
+            append_lever(world, &mut mesh, block_pos, block_id);
+            continue;
+        }
+
+        if block_id == 29 || block_id == 33 {
+            append_oriented_piston_block(world, &mut mesh, block_pos, block_id);
+            continue;
+        }
+
         if let Some((tile_x, tile_y)) = flat_top_block_tile(block_id) {
             append_flat_tile(
                 &mut mesh,
@@ -63,11 +88,6 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
 
         if let Some((tile_x, tile_y)) = cross_plane_block_tile(block_id) {
             append_cross_plane_block(&mut mesh, block_pos, tile_x, tile_y);
-            continue;
-        }
-
-        if block_id == REDSTONE_WIRE_BLOCK_ID || block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
-            append_redstone_wire(&mut mesh, block_pos, block_id);
             continue;
         }
 
@@ -92,6 +112,71 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
     } else {
         Some(mesh)
     }
+}
+
+pub fn build_block_break_overlay_mesh_data(
+    world: &BlockWorld,
+    block_pos: BlockPos,
+    stage: u8,
+) -> Option<TerrainMeshData> {
+    let block_id = world.block_id(block_pos);
+    if block_id == 0 || is_fluid_block(block_id) {
+        return None;
+    }
+
+    let mut mesh = TerrainMeshData::default();
+
+    if block_id == REDSTONE_WIRE_BLOCK_ID || block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
+        append_redstone_wire(world, &mut mesh, block_pos, block_id);
+    } else if is_torch_block(block_id) {
+        append_torch(world, &mut mesh, block_pos, block_id);
+    } else if block_id == 69 {
+        append_lever(world, &mut mesh, block_pos, block_id);
+    } else if block_id == 29 || block_id == 33 {
+        append_oriented_piston_block(world, &mut mesh, block_pos, block_id);
+    } else if let Some((tile_x, tile_y)) = flat_top_block_tile(block_id) {
+        append_flat_tile(
+            &mut mesh,
+            block_pos,
+            tile_x,
+            tile_y,
+            FLAT_TILE_RENDER_OFFSET,
+        );
+    } else if let Some((tile_x, tile_y)) = cross_plane_block_tile(block_id) {
+        append_cross_plane_block(&mut mesh, block_pos, tile_x, tile_y);
+    } else {
+        for face in FACE_DEFS {
+            append_face(&mut mesh, block_pos, block_id, face);
+        }
+    }
+
+    if mesh.indices.is_empty() {
+        return None;
+    }
+
+    let uv = atlas_uv(stage.min(9), 15);
+    let face_count = mesh.positions.len() / 4;
+    for face_index in 0..face_count {
+        let vertex_start = face_index * 4;
+
+        mesh.uvs[vertex_start..vertex_start + 4].copy_from_slice(&uv);
+
+        for vertex_index in vertex_start..vertex_start + 4 {
+            mesh.colors[vertex_index] = [0.0, 0.0, 0.0, BREAK_OVERLAY_ALPHA];
+
+            let normal = mesh.normals[vertex_index];
+            mesh.positions[vertex_index][0] += normal[0] * BREAK_OVERLAY_NORMAL_OFFSET;
+            mesh.positions[vertex_index][1] += normal[1] * BREAK_OVERLAY_NORMAL_OFFSET;
+            mesh.positions[vertex_index][2] += normal[2] * BREAK_OVERLAY_NORMAL_OFFSET;
+        }
+    }
+
+    mesh.face_is_fluid.resize(face_count, true);
+    for is_fluid_face in &mut mesh.face_is_fluid {
+        *is_fluid_face = true;
+    }
+
+    Some(mesh)
 }
 
 pub fn dirty_chunks_for_block(block_pos: BlockPos) -> Vec<ChunkPos> {
@@ -343,8 +428,7 @@ pub fn atlas_tile_for_block_face(block_id: u16, face: BlockFace) -> (u8, u8) {
             _ => (11, 14),
         },
         171 => (0, 4),
-        REDSTONE_WIRE_BLOCK_ID => (4, 10),
-        REDSTONE_WIRE_POWERED_BLOCK_ID => (4, 11),
+        REDSTONE_WIRE_BLOCK_ID | REDSTONE_WIRE_POWERED_BLOCK_ID => (4, 10),
         WATER_SOURCE_BLOCK_ID | WATER_FLOWING_BLOCK_ID => match face {
             BlockFace::Top | BlockFace::Bottom => (13, 12),
             _ => (14, 12),
@@ -359,8 +443,19 @@ pub fn atlas_tile_for_block_face(block_id: u16, face: BlockFace) -> (u8, u8) {
 }
 
 fn append_face(mesh: &mut TerrainMeshData, block_pos: BlockPos, block_id: u16, face_def: FaceDef) {
-    let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
     let (tile_x, tile_y) = atlas_tile_for_block_face(block_id, face_def.face);
+    append_face_with_tile(mesh, block_pos, block_id, face_def, tile_x, tile_y);
+}
+
+fn append_face_with_tile(
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+    face_def: FaceDef,
+    tile_x: u8,
+    tile_y: u8,
+) {
+    let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
     let uv = atlas_uv(tile_x, tile_y);
     let color = vertex_tint_for_face(block_id, face_def.face);
 
@@ -380,24 +475,227 @@ fn append_face(mesh: &mut TerrainMeshData, block_pos: BlockPos, block_id: u16, f
     mesh.face_is_fluid.push(false);
 }
 
-fn append_redstone_wire(mesh: &mut TerrainMeshData, block_pos: BlockPos, block_id: u16) {
-    let (tile_x, tile_y) = if block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
-        (4, 11)
+fn append_oriented_piston_block(
+    world: &BlockWorld,
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+) {
+    let facing = world.block_data(block_pos) & 0x7;
+
+    for face in FACE_DEFS {
+        let neighbor = BlockPos::new(
+            block_pos.x + face.neighbor[0],
+            block_pos.y + face.neighbor[1],
+            block_pos.z + face.neighbor[2],
+        );
+        if is_face_occluding_block(world.block_id(neighbor)) {
+            continue;
+        }
+
+        let (tile_x, tile_y) = piston_face_tile(block_id, facing, face.face);
+        append_face_with_tile(mesh, block_pos, block_id, face, tile_x, tile_y);
+    }
+}
+
+fn piston_face_tile(block_id: u16, facing: u8, face: BlockFace) -> (u8, u8) {
+    let facing_face = block_face_from_facing_data(facing);
+    let back_face = opposite_face(facing_face);
+
+    if face == facing_face {
+        if block_id == 29 { (10, 6) } else { (11, 6) }
+    } else if face == back_face {
+        (13, 6)
     } else {
-        (4, 10)
+        (12, 6)
+    }
+}
+
+fn block_face_from_facing_data(facing: u8) -> BlockFace {
+    match facing {
+        0 => BlockFace::Bottom,
+        1 => BlockFace::Top,
+        2 => BlockFace::North,
+        3 => BlockFace::South,
+        4 => BlockFace::West,
+        5 => BlockFace::East,
+        _ => BlockFace::Top,
+    }
+}
+
+fn opposite_face(face: BlockFace) -> BlockFace {
+    match face {
+        BlockFace::Top => BlockFace::Bottom,
+        BlockFace::Bottom => BlockFace::Top,
+        BlockFace::North => BlockFace::South,
+        BlockFace::South => BlockFace::North,
+        BlockFace::West => BlockFace::East,
+        BlockFace::East => BlockFace::West,
+    }
+}
+
+fn append_redstone_wire(
+    world: &BlockWorld,
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+) {
+    let y = block_pos.y as f32 + REDSTONE_WIRE_RENDER_OFFSET;
+    let color = if block_id == REDSTONE_WIRE_POWERED_BLOCK_ID {
+        REDSTONE_WIRE_LIT_TINT
+    } else {
+        REDSTONE_WIRE_UNLIT_TINT
     };
 
-    let uv = atlas_uv(tile_x, tile_y);
-    let y = block_pos.y as f32 + REDSTONE_WIRE_RENDER_OFFSET;
-    let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
-    let color = [1.0, 1.0, 1.0, 1.0];
+    let (w, e, n, s) = redstone_connections(world, block_pos);
+    let mut x0 = block_pos.x as f32;
+    let mut x1 = block_pos.x as f32 + 1.0;
+    let mut z0 = block_pos.z as f32;
+    let mut z1 = block_pos.z as f32 + 1.0;
 
-    let corners = [
-        [block_pos.x as f32, y, block_pos.z as f32],
-        [block_pos.x as f32, y, block_pos.z as f32 + 1.0],
-        [block_pos.x as f32 + 1.0, y, block_pos.z as f32 + 1.0],
-        [block_pos.x as f32 + 1.0, y, block_pos.z as f32],
-    ];
+    let pic = if (w || e) && !n && !s {
+        1
+    } else if (n || s) && !e && !w {
+        2
+    } else {
+        0
+    };
+
+    if pic == 0 {
+        if !w {
+            x0 += REDSTONE_WIRE_CUT_DISTANCE;
+        }
+        if !e {
+            x1 -= REDSTONE_WIRE_CUT_DISTANCE;
+        }
+        if !n {
+            z0 += REDSTONE_WIRE_CUT_DISTANCE;
+        }
+        if !s {
+            z1 -= REDSTONE_WIRE_CUT_DISTANCE;
+        }
+    }
+
+    let base_uv = if pic == 0 {
+        let mut u0 = 0.0;
+        let mut v0 = 0.0;
+        let mut u1 = 16.0;
+        let mut v1 = 16.0;
+        let cut = REDSTONE_WIRE_CUT_DISTANCE * 16.0;
+        if !w {
+            u0 += cut;
+        }
+        if !e {
+            u1 -= cut;
+        }
+        if !n {
+            v0 += cut;
+        }
+        if !s {
+            v1 -= cut;
+        }
+        atlas_uv_region(4, 10, u0, v0, u1, v1)
+    } else if pic == 1 {
+        atlas_uv(5, 10)
+    } else {
+        let uv = atlas_uv(5, 10);
+        [uv[1], uv[0], uv[3], uv[2]]
+    };
+
+    append_redstone_wire_quad(mesh, x0, x1, z0, z1, y, base_uv, color);
+
+    let overlay_uv = if pic == 0 {
+        let mut u0 = 0.0;
+        let mut v0 = 0.0;
+        let mut u1 = 16.0;
+        let mut v1 = 16.0;
+        let cut = REDSTONE_WIRE_CUT_DISTANCE * 16.0;
+        if !w {
+            u0 += cut;
+        }
+        if !e {
+            u1 -= cut;
+        }
+        if !n {
+            v0 += cut;
+        }
+        if !s {
+            v1 -= cut;
+        }
+        atlas_uv_region(4, 11, u0, v0, u1, v1)
+    } else if pic == 1 {
+        atlas_uv(5, 11)
+    } else {
+        let uv = atlas_uv(5, 11);
+        [uv[1], uv[0], uv[3], uv[2]]
+    };
+    append_redstone_wire_quad(
+        mesh,
+        x0,
+        x1,
+        z0,
+        z1,
+        y + 0.0001,
+        overlay_uv,
+        [1.0, 1.0, 1.0, 1.0],
+    );
+}
+
+fn redstone_connections(world: &BlockWorld, block_pos: BlockPos) -> (bool, bool, bool, bool) {
+    (
+        redstone_connects_in_direction(world, block_pos, -1, 0),
+        redstone_connects_in_direction(world, block_pos, 1, 0),
+        redstone_connects_in_direction(world, block_pos, 0, -1),
+        redstone_connects_in_direction(world, block_pos, 0, 1),
+    )
+}
+
+fn redstone_connects_in_direction(
+    world: &BlockWorld,
+    block_pos: BlockPos,
+    dx: i32,
+    dz: i32,
+) -> bool {
+    let neighbor = BlockPos::new(block_pos.x + dx, block_pos.y, block_pos.z + dz);
+    if redstone_connection_target(world.block_id(neighbor)) {
+        return true;
+    }
+
+    let block_above = BlockPos::new(block_pos.x, block_pos.y + 1, block_pos.z);
+    if !is_block_motion_solid(world.block_id(neighbor)) {
+        let below = BlockPos::new(neighbor.x, neighbor.y - 1, neighbor.z);
+        if redstone_connection_target(world.block_id(below)) {
+            return true;
+        }
+    } else if !is_block_motion_solid(world.block_id(block_above)) {
+        let above = BlockPos::new(neighbor.x, neighbor.y + 1, neighbor.z);
+        if redstone_connection_target(world.block_id(above)) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn redstone_connection_target(block_id: u16) -> bool {
+    block_id == REDSTONE_WIRE_BLOCK_ID
+        || block_id == REDSTONE_WIRE_POWERED_BLOCK_ID
+        || is_redstone_block(block_id)
+}
+
+fn append_redstone_wire_quad(
+    mesh: &mut TerrainMeshData,
+    x0: f32,
+    x1: f32,
+    z0: f32,
+    z1: f32,
+    y: f32,
+    uv: [[f32; 2]; 4],
+    color: [f32; 4],
+) {
+    let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
+
+    let corners = [[x0, y, z0], [x0, y, z1], [x1, y, z1], [x1, y, z0]];
 
     for index in 0..4 {
         mesh.positions.push(corners[index]);
@@ -408,7 +706,309 @@ fn append_redstone_wire(mesh: &mut TerrainMeshData, block_pos: BlockPos, block_i
 
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(false);
+    mesh.face_is_fluid.push(true);
+}
+
+fn atlas_uv_region(
+    tile_x: u8,
+    tile_y: u8,
+    u0_px: f32,
+    v0_px: f32,
+    u1_px: f32,
+    v1_px: f32,
+) -> [[f32; 2]; 4] {
+    let full = atlas_uv(tile_x, tile_y);
+    let tile_u0 = full[0][0];
+    let tile_u1 = full[1][0];
+    let tile_v0 = full[2][1];
+    let tile_v1 = full[0][1];
+
+    let u0 = tile_u0 + (tile_u1 - tile_u0) * (u0_px / 16.0);
+    let u1 = tile_u0 + (tile_u1 - tile_u0) * (u1_px / 16.0);
+    let v0 = tile_v0 + (tile_v1 - tile_v0) * (v0_px / 16.0);
+    let v1 = tile_v0 + (tile_v1 - tile_v0) * (v1_px / 16.0);
+
+    [[u0, v1], [u0, v0], [u1, v0], [u1, v1]]
+}
+
+fn is_torch_block(block_id: u16) -> bool {
+    matches!(block_id, 50 | 75 | 76)
+}
+
+fn append_torch(
+    world: &BlockWorld,
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+) {
+    let data = world.block_data(block_pos) & 0x7;
+    let (x0, y0, z0, x1, y1, z1) = match data {
+        1 => (0.0, 0.2, 0.35, 0.3, 0.8, 0.65),
+        2 => (0.7, 0.2, 0.35, 1.0, 0.8, 0.65),
+        3 => (0.35, 0.2, 0.0, 0.65, 0.8, 0.3),
+        4 => (0.35, 0.2, 0.7, 0.65, 0.8, 1.0),
+        _ => (0.4, 0.0, 0.4, 0.6, 0.6, 0.6),
+    };
+
+    append_axis_aligned_box(
+        mesh,
+        block_pos,
+        block_id,
+        [x0, y0, z0, x1, y1, z1],
+        [1.0, 1.0, 1.0, 1.0],
+        true,
+    );
+}
+
+fn append_lever(
+    world: &BlockWorld,
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+) {
+    let dir = world.block_data(block_pos) & 0x7;
+    let bounds = match dir {
+        1 => [0.0, 0.2, 0.3125, 0.375, 0.8, 0.6875],
+        2 => [0.625, 0.2, 0.3125, 1.0, 0.8, 0.6875],
+        3 => [0.3125, 0.2, 0.0, 0.6875, 0.8, 0.375],
+        4 => [0.3125, 0.2, 0.625, 0.6875, 0.8, 1.0],
+        5 | 6 => [0.25, 0.0, 0.25, 0.75, 0.6, 0.75],
+        0 | 7 => [0.25, 0.4, 0.25, 0.75, 1.0, 0.75],
+        _ => [0.25, 0.0, 0.25, 0.75, 0.6, 0.75],
+    };
+
+    append_axis_aligned_box(
+        mesh,
+        block_pos,
+        block_id,
+        bounds,
+        [1.0, 1.0, 1.0, 1.0],
+        true,
+    );
+}
+
+fn append_axis_aligned_box(
+    mesh: &mut TerrainMeshData,
+    block_pos: BlockPos,
+    block_id: u16,
+    bounds: [f32; 6],
+    color: [f32; 4],
+    transparent: bool,
+) {
+    let [x0, y0, z0, x1, y1, z1] = bounds;
+
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+        ],
+        [0.0, 1.0, 0.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::Top).0,
+            atlas_tile_for_block_face(block_id, BlockFace::Top).1,
+        ),
+        color,
+        transparent,
+    );
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+        ],
+        [0.0, -1.0, 0.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::Bottom).0,
+            atlas_tile_for_block_face(block_id, BlockFace::Bottom).1,
+        ),
+        color,
+        transparent,
+    );
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+        ],
+        [0.0, 0.0, -1.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::North).0,
+            atlas_tile_for_block_face(block_id, BlockFace::North).1,
+        ),
+        color,
+        transparent,
+    );
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+        ],
+        [0.0, 0.0, 1.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::South).0,
+            atlas_tile_for_block_face(block_id, BlockFace::South).1,
+        ),
+        color,
+        transparent,
+    );
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x0,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+        ],
+        [-1.0, 0.0, 0.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::West).0,
+            atlas_tile_for_block_face(block_id, BlockFace::West).1,
+        ),
+        color,
+        transparent,
+    );
+    append_box_face(
+        mesh,
+        [
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z1,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y1,
+                block_pos.z as f32 + z0,
+            ],
+            [
+                block_pos.x as f32 + x1,
+                block_pos.y as f32 + y0,
+                block_pos.z as f32 + z0,
+            ],
+        ],
+        [1.0, 0.0, 0.0],
+        atlas_uv(
+            atlas_tile_for_block_face(block_id, BlockFace::East).0,
+            atlas_tile_for_block_face(block_id, BlockFace::East).1,
+        ),
+        color,
+        transparent,
+    );
+}
+
+fn append_box_face(
+    mesh: &mut TerrainMeshData,
+    corners: [[f32; 3]; 4],
+    normal: [f32; 3],
+    uv: [[f32; 2]; 4],
+    color: [f32; 4],
+    transparent: bool,
+) {
+    let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
+    for index in 0..4 {
+        mesh.positions.push(corners[index]);
+        mesh.normals.push(normal);
+        mesh.uvs.push(uv[index]);
+        mesh.colors.push(color);
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    mesh.face_is_fluid.push(transparent);
 }
 
 fn flat_top_block_tile(block_id: u16) -> Option<(u8, u8)> {
@@ -436,7 +1036,6 @@ fn cross_plane_block_tile(block_id: u16) -> Option<(u8, u8)> {
         38 => (12, 0),
         39 => (13, 1),
         40 => (12, 1),
-        50 => (0, 5),
         59 => (15, 5),
         83 => (9, 4),
         106 => (15, 8),

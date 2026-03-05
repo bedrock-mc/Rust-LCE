@@ -17,6 +17,7 @@ fn swim_jump_moves_player_upward_when_submerged() {
             strafe: 0.0,
             forward: 0.0,
             jump: true,
+            sneak: false,
         },
         |block| {
             block.y <= TEST_FLOOR_Y || is_solid_block_for_player_collision(world.block_id(block))
@@ -43,6 +44,7 @@ fn water_drag_reduces_forward_speed_vs_dry_land() {
                 strafe: 0.0,
                 forward: 1.0,
                 jump: false,
+                sneak: false,
             },
             |block| block.y <= TEST_FLOOR_Y,
             |_| false,
@@ -53,6 +55,7 @@ fn water_drag_reduces_forward_speed_vs_dry_land() {
                 strafe: 0.0,
                 forward: 1.0,
                 jump: false,
+                sneak: false,
             },
             |block| {
                 block.y <= TEST_FLOOR_Y

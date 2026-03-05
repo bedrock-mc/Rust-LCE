@@ -375,23 +375,55 @@ const MONSTER_EGG_AUX_ORDER: &[u16] = &[0, 1, 2];
 const STONE_SLAB_AUX_ORDER: &[u16] = &[0, 1, 3, 4, 5, 6, 7];
 const COBBLE_WALL_AUX_ORDER: &[u16] = &[0, 1];
 const SPAWN_EGG_AUX_ORDER: &[u16] = &[
-    50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 90, 91, 92, 93, 94, 95, 96, 98, 120,
+    50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 65, 66, 90, 91, 92, 93, 94, 95, 96, 98, 100,
+    8292, 12388, 120,
 ];
+
+const fn enchanted_book_aux(enchantment_id: u16, max_level: u16) -> u16 {
+    (enchantment_id << 8) | (max_level & 0xFF)
+}
+
+const ENCHANTED_BOOK_AUX_ORDER: &[u16] = &[
+    enchanted_book_aux(0, 4),
+    enchanted_book_aux(1, 4),
+    enchanted_book_aux(2, 4),
+    enchanted_book_aux(3, 4),
+    enchanted_book_aux(4, 4),
+    enchanted_book_aux(5, 3),
+    enchanted_book_aux(6, 1),
+    enchanted_book_aux(7, 3),
+    enchanted_book_aux(16, 5),
+    enchanted_book_aux(17, 5),
+    enchanted_book_aux(18, 5),
+    enchanted_book_aux(19, 2),
+    enchanted_book_aux(20, 2),
+    enchanted_book_aux(21, 3),
+    enchanted_book_aux(32, 5),
+    enchanted_book_aux(33, 1),
+    enchanted_book_aux(34, 3),
+    enchanted_book_aux(35, 3),
+    enchanted_book_aux(48, 5),
+    enchanted_book_aux(49, 2),
+    enchanted_book_aux(50, 1),
+    enchanted_book_aux(51, 1),
+];
+
+const FIREWORK_PRESET_AUX_ORDER: &[u16] = &[1, 2, 3, 4, 5];
 
 pub fn creative_tab_items(tab: CreativeInventoryTab) -> &'static [u16] {
     match tab {
         CreativeInventoryTab::BuildingBlocks => &[
             1, 2, 3, 4, 12, 24, 41, 42, 22, 57, 133, 155, 16, 21, 56, 73, 15, 14, 129, 153, 7, 5,
-            17, 13, 45, 48, 49, 82, 79, 80, 87, 88, 89, 98, 97, 110, 112, 121, 155, 96, 107, 324,
-            330, 44, 126, 53, 135, 134, 136, 67, 108, 109, 114, 128, 156,
+            17, 13, 45, 48, 49, 139, 82, 79, 80, 87, 88, 89, 98, 97, 110, 112, 121, 155, 96, 107,
+            324, 330, 44, 126, 53, 135, 134, 136, 67, 108, 109, 114, 128, 156,
         ],
         CreativeInventoryTab::Decorations => &[
             397, 19, 103, 86, 91, 6, 18, 106, 111, 50, 31, 32, 37, 38, 39, 40, 81, 78, 30, 102, 20,
             321, 389, 323, 47, 390, 35, 171,
         ],
         CreativeInventoryTab::RedstoneAndTransport => &[
-            66, 27, 28, 65, 328, 342, 343, 329, 333, 23, 25, 33, 29, 46, 69, 77, 143, 70, 72, 331,
-            76, 356, 123, 131,
+            66, 27, 28, 157, 65, 328, 342, 343, 408, 407, 329, 333, 23, 25, 33, 29, 46, 69, 77,
+            143, 70, 72, 331, 152, 76, 356, 123, 131, 151, 158, 154, 404, 146, 148, 147,
         ],
         CreativeInventoryTab::Materials => &[
             263, 264, 388, 265, 266, 406, 336, 405, 280, 281, 352, 287, 288, 318, 334, 289, 337,
@@ -402,16 +434,16 @@ pub fn creative_tab_items(tab: CreativeInventoryTab) -> &'static [u16] {
             392, 393, 394, 391, 396, 400,
         ],
         CreativeInventoryTab::ToolsWeaponsArmor => &[
-            345, 298, 299, 300, 301, 268, 269, 270, 271, 290, 358, 302, 303, 304, 305, 272, 273,
+            345, 298, 299, 300, 301, 268, 269, 270, 271, 290, 395, 302, 303, 304, 305, 272, 273,
             274, 275, 291, 261, 306, 307, 308, 309, 267, 256, 257, 258, 292, 262, 314, 315, 316,
             317, 283, 284, 285, 286, 294, 259, 310, 311, 312, 313, 276, 277, 278, 279, 293, 385,
-            347, 359, 346, 398, 403,
+            347, 359, 346, 398, 420, 419, 418, 417, 403,
         ],
         CreativeInventoryTab::Brewing => &[384, 370, 376, 377, 378, 382, 374, 373],
         CreativeInventoryTab::Misc => &[
-            54, 130, 58, 61, 379, 116, 120, 84, 145, 85, 113, 101, 139, 355, 325, 327, 326, 335,
-            380, 332, 339, 340, 368, 381, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2267, 2263,
-            2264, 2265, 2266, 383,
+            54, 130, 58, 61, 379, 116, 120, 84, 145, 355, 325, 327, 326, 335, 380, 332, 339, 340,
+            368, 381, 421, 399, 383, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2267, 2263, 2264,
+            2265, 2266, 401,
         ],
     }
 }
@@ -518,6 +550,11 @@ fn expand_entries_with_aux(tab: CreativeInventoryTab, item_ids: &[u16]) -> Vec<C
                     entries.push(creative_entry(351, *aux));
                 }
             }
+            (CreativeInventoryTab::ToolsWeaponsArmor, 403) => {
+                for aux in ENCHANTED_BOOK_AUX_ORDER {
+                    entries.push(creative_entry(403, *aux));
+                }
+            }
             (CreativeInventoryTab::Food, 322) => {
                 entries.push(creative_entry(322, 0));
                 entries.push(creative_entry(322, 1));
@@ -527,7 +564,12 @@ fn expand_entries_with_aux(tab: CreativeInventoryTab, item_ids: &[u16]) -> Vec<C
                     entries.push(creative_entry(383, *aux));
                 }
             }
-            (CreativeInventoryTab::Misc, 139) => {
+            (CreativeInventoryTab::Misc, 401) => {
+                for aux in FIREWORK_PRESET_AUX_ORDER {
+                    entries.push(creative_entry(401, *aux));
+                }
+            }
+            (CreativeInventoryTab::BuildingBlocks, 139) => {
                 for aux in COBBLE_WALL_AUX_ORDER {
                     entries.push(creative_entry(139, *aux));
                 }

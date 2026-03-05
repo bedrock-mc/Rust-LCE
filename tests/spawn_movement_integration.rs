@@ -38,6 +38,7 @@ fn forward_input_moves_player_one_second_of_ticks() {
             strafe: 0.0,
             forward: 1.0,
             jump: false,
+            sneak: false,
         });
     }
 
@@ -62,6 +63,7 @@ fn jump_input_lifts_then_returns_player_to_ground() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     let after_jump_y = game.player().position.y;
     assert!(after_jump_y > DEFAULT_GROUND_Y);
@@ -90,6 +92,7 @@ fn jump_reaches_one_block_clearance_height() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
 
     let mut peak = game.player().position.y;
@@ -118,12 +121,14 @@ fn double_tap_jump_enables_flight_and_stops_gravity() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     game.tick(MovementInput {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
 
@@ -152,12 +157,14 @@ fn double_tap_jump_while_flying_disables_flight_and_lands() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     game.tick(MovementInput {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     assert!(game.player().is_flying);
@@ -167,12 +174,14 @@ fn double_tap_jump_while_flying_disables_flight_and_lands() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     game.tick(MovementInput {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
 
@@ -201,12 +210,14 @@ fn flight_toggle_is_blocked_when_flight_is_disabled() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     game.tick(MovementInput {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
 
@@ -230,6 +241,7 @@ fn sprinting_scales_ground_speed_by_thirty_percent() {
             strafe: 0.0,
             forward: 1.0,
             jump: false,
+            sneak: false,
         });
     }
 
@@ -251,12 +263,14 @@ fn sprinting_while_flying_scales_vertical_ascent_speed() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     game.tick(MovementInput {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     game.tick(MovementInput::default());
     assert!(game.player().is_flying);
@@ -266,6 +280,7 @@ fn sprinting_while_flying_scales_vertical_ascent_speed() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     let baseline_delta = game.player().position.y - baseline_start;
 
@@ -275,6 +290,7 @@ fn sprinting_while_flying_scales_vertical_ascent_speed() {
         strafe: 0.0,
         forward: 0.0,
         jump: true,
+        sneak: false,
     });
     let sprint_delta = game.player().position.y - sprint_start;
 

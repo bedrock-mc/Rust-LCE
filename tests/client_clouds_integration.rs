@@ -1,6 +1,7 @@
 use lce_rust::client::clouds::{
     CLOUD_HEIGHT, CLOUD_LAYER_THICKNESS, CLOUD_Y_CAMERA_OFFSET, cloud_camera_relative_y,
-    cloud_tick_time, cloud_uv_offset, cloud_world_y, clouds_visible_for_camera_block,
+    cloud_tick_time, cloud_uv_motion, cloud_uv_offset, cloud_world_y,
+    clouds_visible_for_camera_block,
 };
 use lce_rust::world::{WATER_FLOWING_BLOCK_ID, WATER_SOURCE_BLOCK_ID};
 
@@ -16,12 +17,17 @@ fn cloud_tick_time_clamps_partial_tick_alpha() {
 }
 
 #[test]
-fn cloud_uv_offset_matches_legacy_wrap_and_scroll_formula() {
+fn cloud_uv_offset_matches_legacy_advanced_wrap_and_scroll_formula() {
     let tick_time = cloud_tick_time(1_000, 0.25);
+    let motion = cloud_uv_motion(3_000.0, -10.0, tick_time);
     let (u, v) = cloud_uv_offset(3_000.0, -10.0, tick_time);
 
-    assert!(approx_eq(u, 0.479_495_85));
-    assert!(approx_eq(v, 0.995_117_2));
+    assert!(approx_eq(motion.u_offset, 1.984_375));
+    assert!(approx_eq(motion.v_offset, 7.996_093_8));
+    assert!(approx_eq(motion.x_offset_blocks, 6.007_5));
+    assert!(approx_eq(motion.z_offset_blocks, 5.96));
+    assert!(approx_eq(u, motion.u_offset));
+    assert!(approx_eq(v, motion.v_offset));
 }
 
 #[test]

@@ -22,3 +22,12 @@ pub fn allow_first_person_view(
 ) -> bool {
     cursor_captured && !inventory_open && !pause_open && !is_dead
 }
+
+pub fn allow_first_person_item_view(
+    cursor_captured: bool,
+    inventory_open: bool,
+    pause_open: bool,
+    is_dead: bool,
+) -> bool {
+    !inventory_open && !is_dead && (cursor_captured || pause_open)
+}

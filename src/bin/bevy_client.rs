@@ -9,6 +9,8 @@ use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::hierarchy::ChildBuild;
 use bevy::image::{ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::math::{Mat4, Rect};
 use bevy::prelude::*;
@@ -24,8 +26,9 @@ use lce_rust::client::chunk_streaming::{
     parse_boolean_flag, performance_logging_enabled, player_chunk_from_position,
 };
 use lce_rust::client::clouds::{
-    CLOUD_ALPHA, CLOUD_LAYER_THICKNESS, CLOUD_TILE_REPEAT_RADIUS, CLOUD_TILE_SIZE, CLOUD_UV_SCALE,
-    cloud_tick_time, cloud_uv_offset, cloud_world_y, clouds_visible_for_camera_block,
+    CLOUD_ADVANCED_SECTION_RADIUS, CLOUD_ADVANCED_TEXEL_WORLD_SIZE,
+    CLOUD_ADVANCED_TEXELS_PER_SECTION, CLOUD_ALPHA, CLOUD_LAYER_THICKNESS, CLOUD_TEXEL_UV_SCALE,
+    cloud_tick_time, cloud_uv_motion, cloud_world_y, clouds_visible_for_camera_block,
 };
 use lce_rust::client::crafting_ui::{
     collect_crafting_recipe_state, crafting_recipe_count_label, crafting_recipe_title,
@@ -37,14 +40,14 @@ use lce_rust::client::creative_ui::{
     creative_tab_icon_item_id, creative_tab_title, place_creative_entry_in_hotbar,
 };
 use lce_rust::client::gameplay_ui::{
-    allow_cursor_capture, allow_first_person_view, hide_gameplay_overlay, show_death_screen,
-    show_pause_menu,
+    allow_cursor_capture, allow_first_person_item_view, allow_first_person_view,
+    hide_gameplay_overlay, show_death_screen, show_pause_menu,
 };
 use lce_rust::client::hotbar_ui::collect_hotbar_state;
 use lce_rust::client::interaction::{
-    BlockAction, INTERACTION_DISTANCE_BLOCKS, apply_block_action, forward_vector_from_yaw_pitch,
-    movement_axes_from_yaw, placement_intersects_player_collider, raycast_first_non_air_block,
-    raycast_first_solid_block, target_chunk_for_block,
+    BlockAction, BlockRaycastHit, INTERACTION_DISTANCE_BLOCKS, apply_block_action,
+    forward_vector_from_yaw_pitch, movement_axes_from_yaw, placement_intersects_player_collider,
+    raycast_first_non_air_block, raycast_first_solid_block, target_chunk_for_block,
 };
 use lce_rust::client::inventory_ui::collect_inventory_state;
 use lce_rust::client::lifecycle_hooks::{
@@ -54,13 +57,14 @@ use lce_rust::client::lifecycle_hooks::{
 use lce_rust::client::particles::terrain_break_particle_tile;
 use lce_rust::client::terrain_meshing::{
     BlockFace, TERRAIN_ATLAS_TILES, TerrainMeshData, atlas_tile_for_block_face,
-    build_chunk_mesh_data, dirty_chunks_for_block,
+    build_block_break_overlay_mesh_data, build_chunk_mesh_data, dirty_chunks_for_block,
 };
 use lce_rust::client::world_worker::{ChunkDataSource, GeneratedChunk, WorldWorker};
 use lce_rust::save::world_io::{load_world_snapshot, save_world_snapshot};
 use lce_rust::world::{
     BlockPos, BlockWorld, ChunkLifecycleController, ChunkPos, DAY_LENGTH_TICKS, HOTBAR_SLOTS,
-    INVENTORY_SLOTS, ItemStack, LAVA_SOURCE_BLOCK_ID, MovementInput, OfflineGameSession, RECIPES,
+    INVENTORY_SLOTS, ItemStack, LAVA_SOURCE_BLOCK_ID, LEVER_BLOCK_ID, MovementInput,
+    OfflineGameSession, RECIPES, REDSTONE_TORCH_OFF_BLOCK_ID, REDSTONE_TORCH_ON_BLOCK_ID,
     ScheduledTick, WALK_SPEED_BLOCKS_PER_SECOND, WATER_FLOWING_BLOCK_ID, WATER_SOURCE_BLOCK_ID,
     WeatherKind, WorldSession, block_id_for_item, craft_recipe, fluid_ticks_for_block_change,
     is_fluid_block, is_solid_block_for_player_collision, process_scheduled_fluid_tick,
@@ -97,15 +101,23 @@ const FIRST_PERSON_ITEM_FOV_DEGREES: f32 = 70.0;
 const UI_ITEM_MODEL_SCALE: f32 = 0.55;
 const HEART_ICON_SIZE: f32 = 9.0;
 const HEART_ICON_STRIDE: f32 = 8.0;
+const HUD_STATUS_ROW_WIDTH: f32 = HEART_ICON_SIZE + HEART_ICON_STRIDE * 9.0;
+const HUD_XP_BAR_WIDTH: f32 = 182.0;
+const HUD_XP_BAR_HEIGHT: f32 = 5.0;
+const HUD_XP_BAR_TO_HOTBAR_GAP: f32 = 3.0;
+const HUD_STATUS_TO_XP_GAP: f32 = 1.0;
+const HUD_FOOD_UV_Y: f32 = 27.0;
+const HUD_XP_UV_BG_Y: f32 = 64.0;
+const HUD_XP_UV_FILL_Y: f32 = 69.0;
 const SPRINT_RUN_THRESHOLD: f32 = 0.8;
 const SPRINT_TRIGGER_WINDOW_TICKS: u8 = 7;
-const VIEW_BOB_HORIZONTAL_AMPLITUDE: f32 = 0.008;
-const VIEW_BOB_VERTICAL_AMPLITUDE: f32 = 0.005;
-const VIEW_BOB_FREQUENCY_HZ: f32 = 1.8;
 const BREAK_PARTICLE_SUBDIVISIONS: i32 = 4;
 const BREAK_PARTICLE_TICK_GRAVITY: f32 = 0.04;
 const BREAK_PARTICLE_TICK_DRAG: f32 = 0.98;
 const BREAK_PARTICLE_SCALE_MULTIPLIER: f32 = 0.2;
+const BLOCK_HIT_PARTICLE_COUNT: usize = 8;
+const BLOCK_BREAK_HIT_SOUND_SWING_INTERVAL: u8 = 4;
+const BLOCK_BREAK_COOLDOWN_SWINGS: u8 = 5;
 const ITEM_IN_HAND_SWING_DURATION_TICKS: i32 = 6;
 const ITEM_IN_HAND_MAX_HEIGHT_DELTA: f32 = 0.4;
 const ITEM_IN_HAND_SWING_POW_FACTOR: f32 = 4.0;
@@ -118,6 +130,41 @@ const INVENTORY_PLAYER_PREVIEW_MOUSE_DIVISOR: f32 = 40.0;
 const INVENTORY_PLAYER_PREVIEW_ROTATE_SCALE_DEGREES: f32 = 20.0;
 const INVENTORY_PLAYER_PREVIEW_HEAD_YAW_SCALE_DEGREES: f32 = 40.0;
 const INVENTORY_PLAYER_PREVIEW_MODEL_SCALE: f32 = 2.0;
+const GLASS_BLOCK_ID: u16 = 20;
+const FENCE_BLOCK_ID: u16 = 85;
+const NETHER_FENCE_BLOCK_ID: u16 = 113;
+const COBBLE_WALL_BLOCK_ID: u16 = 139;
+const BOW_ITEM_ID: u16 = 261;
+const MAP_ITEM_ID: u16 = 358;
+const EAT_DRINK_USE_DURATION_TICKS: f32 = 32.0;
+const BOW_DRAW_DURATION_TICKS: f32 = 20.0;
+const MAX_CONTINUOUS_USE_DURATION_TICKS: f32 = 20.0 * 60.0 * 60.0;
+const SWORD_ITEM_IDS: [u16; 5] = [268, 272, 267, 283, 276];
+const SHOVEL_ITEM_IDS: [u16; 5] = [269, 273, 256, 277, 284];
+const PICKAXE_ITEM_IDS: [u16; 5] = [270, 274, 257, 285, 278];
+const AXE_ITEM_IDS: [u16; 5] = [271, 275, 258, 279, 286];
+const HOE_ITEM_IDS: [u16; 5] = [290, 291, 292, 293, 294];
+const HAND_EQUIPPED_DIRECT_ITEM_IDS: [u16; 5] = [280, 352, 369, 346, 398];
+const MIRRORED_ART_ITEM_IDS: [u16; 2] = [346, 398];
+const EAT_ITEM_IDS: [u16; 22] = [
+    260, 282, 297, 319, 320, 322, 349, 350, 357, 360, 363, 364, 365, 366, 367, 375, 391, 392, 393,
+    394, 396, 400,
+];
+const DRINK_ITEM_IDS: [u16; 2] = [335, 373];
+const HIT_OUTLINE_GROW: f32 = 0.002;
+
+fn hotbar_top_offset() -> f32 {
+    HOTBAR_BOTTOM_OFFSET + 22.0 * HOTBAR_GUI_SCALE
+}
+
+fn xp_bar_bottom_offset() -> f32 {
+    hotbar_top_offset() + HUD_XP_BAR_TO_HOTBAR_GAP * HOTBAR_GUI_SCALE
+}
+
+fn status_row_bottom_offset() -> f32 {
+    hotbar_top_offset()
+        + (HUD_XP_BAR_TO_HOTBAR_GAP + HUD_XP_BAR_HEIGHT + HUD_STATUS_TO_XP_GAP) * HOTBAR_GUI_SCALE
+}
 
 #[derive(Resource)]
 struct GameState {
@@ -156,6 +203,19 @@ struct ItemInHandAnimationState {
     o_attack_anim: f32,
     swinging: bool,
     swing_time: i32,
+    defending: bool,
+    use_animation: HeldItemUseAnimation,
+    use_ticks: f32,
+    o_use_ticks: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HeldItemUseAnimation {
+    #[default]
+    None,
+    Block,
+    EatDrink,
+    Bow,
 }
 
 impl Default for ItemInHandAnimationState {
@@ -169,6 +229,10 @@ impl Default for ItemInHandAnimationState {
             o_attack_anim: 0.0,
             swinging: false,
             swing_time: 0,
+            defending: false,
+            use_animation: HeldItemUseAnimation::None,
+            use_ticks: 0.0,
+            o_use_ticks: 0.0,
         }
     }
 }
@@ -229,6 +293,10 @@ impl ItemInHandAnimationState {
         }
     }
 
+    fn can_repeat_left_click_action(&self) -> bool {
+        !self.swinging || self.swing_time >= ITEM_IN_HAND_SWING_DURATION_TICKS / 2
+    }
+
     fn item_placed(&mut self) {
         self.height = 0.0;
     }
@@ -244,6 +312,38 @@ impl ItemInHandAnimationState {
 
     fn equip_height(&self, partial_tick: f32) -> f32 {
         self.o_height + (self.height - self.o_height) * partial_tick
+    }
+
+    fn set_defending(&mut self, defending: bool) {
+        self.defending = defending;
+    }
+
+    fn tick_use_animation(&mut self, use_animation: HeldItemUseAnimation) {
+        self.o_use_ticks = self.use_ticks;
+
+        if use_animation == HeldItemUseAnimation::None {
+            self.use_animation = HeldItemUseAnimation::None;
+            self.use_ticks = 0.0;
+            self.o_use_ticks = 0.0;
+            return;
+        }
+
+        if self.use_animation != use_animation {
+            self.use_animation = use_animation;
+            self.use_ticks = 0.0;
+            self.o_use_ticks = 0.0;
+        }
+
+        let max_ticks = use_animation_max_duration_ticks(use_animation);
+        self.use_ticks = (self.use_ticks + 1.0).min(max_ticks);
+    }
+
+    fn use_animation(&self) -> HeldItemUseAnimation {
+        self.use_animation
+    }
+
+    fn use_ticks(&self, partial_tick: f32) -> f32 {
+        self.o_use_ticks + (self.use_ticks - self.o_use_ticks) * partial_tick
     }
 }
 
@@ -364,6 +464,19 @@ struct InventoryUiState {
     open: bool,
 }
 
+#[derive(Resource, Default)]
+struct InventoryDragState {
+    held_stack: Option<ItemStack>,
+    source_slot: Option<usize>,
+}
+
+impl InventoryDragState {
+    fn clear(&mut self) {
+        self.held_stack = None;
+        self.source_slot = None;
+    }
+}
+
 #[derive(Resource, Clone)]
 struct CreativeInventoryState {
     tab: CreativeInventoryTab,
@@ -413,10 +526,40 @@ struct PauseMenuState {
 }
 
 #[derive(Resource, Default)]
+struct ChatInputState {
+    open: bool,
+    text: String,
+}
+
+#[derive(Resource, Default)]
 struct SprintInputState {
     trigger_time: u8,
     trigger_registered_return: bool,
     was_running: bool,
+}
+
+#[derive(Resource, Default)]
+struct BlockDestroyState {
+    target: Option<BlockPos>,
+    progress: f32,
+    cooldown_swings: u8,
+    destroy_swings: u8,
+}
+
+impl BlockDestroyState {
+    fn clear(&mut self) {
+        self.target = None;
+        self.progress = 0.0;
+        self.cooldown_swings = 0;
+        self.destroy_swings = 0;
+    }
+}
+
+#[derive(Resource, Default)]
+struct BlockBreakOverlayState {
+    entity: Option<Entity>,
+    target: Option<BlockPos>,
+    stage: u8,
 }
 
 #[derive(Resource, Clone, Copy)]
@@ -432,11 +575,6 @@ struct TerrainTextureSamplerState {
     player_skin_texture: Option<Handle<Image>>,
     clouds_texture: Option<Handle<Image>>,
     configured: bool,
-}
-
-#[derive(Resource, Default)]
-struct ViewBobbingState {
-    intensity: f32,
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -528,6 +666,27 @@ impl Default for LookState {
     }
 }
 
+#[derive(Resource, Default)]
+struct LookBobState {
+    pitch_old_degrees: f32,
+    pitch_degrees: f32,
+    yaw_old_degrees: f32,
+    yaw_degrees: f32,
+    x_bob_old_degrees: f32,
+    x_bob_degrees: f32,
+    y_bob_old_degrees: f32,
+    y_bob_degrees: f32,
+}
+
+#[derive(Resource, Default)]
+struct PlayerWalkAnimationState {
+    walk_dist: f32,
+    walk_dist_old: f32,
+    bob: f32,
+    bob_old: f32,
+    age_ticks: f32,
+}
+
 #[derive(Debug, Default)]
 struct ChunkWindowPerfStats {
     async_mode: bool,
@@ -579,6 +738,12 @@ struct HotbarRootUi;
 struct CrosshairRootUi;
 
 #[derive(Component)]
+struct ChatRootUi;
+
+#[derive(Component)]
+struct ChatInputTextUi;
+
+#[derive(Component)]
 struct HotbarSlotUi {
     slot: usize,
 }
@@ -603,6 +768,23 @@ struct HealthHudRootUi;
 struct HeartFillUi {
     index: usize,
 }
+
+#[derive(Component)]
+struct HungerHudRootUi;
+
+#[derive(Component)]
+struct HungerFillUi {
+    index: usize,
+}
+
+#[derive(Component)]
+struct XpHudRootUi;
+
+#[derive(Component)]
+struct XpHudFillUi;
+
+#[derive(Component)]
+struct XpLevelTextUi;
 
 #[derive(Component)]
 struct InventoryScreenRootUi;
@@ -773,10 +955,16 @@ struct InventoryPlayerPreviewPartUi {
 }
 
 #[derive(Component)]
+struct InventoryPlayerPreviewHeldItemUi;
+
+#[derive(Component)]
 struct BreakParticle {
     velocity: Vec3,
     remaining_lifetime_ticks: f32,
 }
+
+#[derive(Component)]
+struct BlockBreakOverlay;
 
 #[derive(Component)]
 struct CloudLayer;
@@ -950,15 +1138,18 @@ fn main() {
         .insert_resource(save_root)
         .insert_resource(CursorCaptureState::default())
         .insert_resource(InventoryUiState::default())
+        .insert_resource(InventoryDragState::default())
         .insert_resource(CreativeInventoryState::default())
         .insert_resource(PauseMenuState::default())
+        .insert_resource(ChatInputState::default())
         .insert_resource(SprintInputState::default())
+        .insert_resource(BlockDestroyState::default())
+        .insert_resource(BlockBreakOverlayState::default())
         .insert_resource(PlayerRenderPosition {
             previous: world_vec3_to_bevy(initial_player_position),
             current: world_vec3_to_bevy(initial_player_position),
         })
         .insert_resource(TerrainTextureSamplerState::default())
-        .insert_resource(ViewBobbingState::default())
         .insert_resource(perf_debug_config)
         .insert_resource(PerfDebugState::default())
         .insert_non_send_resource(world_generation_worker)
@@ -971,6 +1162,8 @@ fn main() {
         .insert_resource(UiItemMeshCache::default())
         .insert_resource(ItemInHandAnimationState::default())
         .insert_resource(LookState::default())
+        .insert_resource(LookBobState::default())
+        .insert_resource(PlayerWalkAnimationState::default())
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest())
@@ -993,8 +1186,10 @@ fn main() {
                 handle_cursor_capture,
                 handle_inventory_toggle,
                 handle_pause_menu_toggle,
+                handle_chat_input,
                 update_look_from_mouse,
                 update_camera,
+                render_target_block_outline,
                 sync_cloud_layer,
                 sync_chunk_window,
                 handle_hotbar_selection,
@@ -1006,7 +1201,13 @@ fn main() {
         )
         .add_systems(
             Update,
-            (handle_block_interaction, handle_inventory_crafting).chain(),
+            (
+                handle_block_interaction,
+                sync_block_break_overlay,
+                handle_inventory_slot_drag,
+                handle_inventory_crafting,
+            )
+                .chain(),
         )
         .add_systems(
             Update,
@@ -1037,6 +1238,7 @@ fn main() {
                 sync_inventory_player_preview,
                 sync_creative_inventory_ui,
                 sync_fps_ui,
+                sync_chat_ui,
                 apply_terrain_texture_sampler,
                 apply_lifecycle_runtime_hooks,
                 persist_on_exit,
@@ -1069,7 +1271,7 @@ fn create_initial_state() -> (GameState, SaveRoot) {
 
     let blocks = BlockWorld::new();
     let mut session = OfflineGameSession::new(world_session);
-    session.set_player_allow_flight(true);
+    session.set_player_allow_flight(false);
     seed_player_inventory(&mut session.player_mut().inventory);
 
     (GameState { session, blocks }, SaveRoot(save_root))
@@ -1262,6 +1464,11 @@ fn spawn_ui_item_models(
     ui_item_assets: &UiItemRenderAssets,
 ) {
     let fallback_mesh = meshes.add(build_ui_item_mesh(1));
+    let hand_mesh = meshes.add(build_first_person_hand_mesh());
+    let hand_material = ui_item_assets
+        .player_skin_material
+        .clone()
+        .unwrap_or_else(|| ui_item_assets.hand_material.clone());
 
     for slot in 0..HOTBAR_SLOTS {
         commands.spawn((
@@ -1310,8 +1517,8 @@ fn spawn_ui_item_models(
 
     commands.spawn((
         FirstPersonHandUi,
-        Mesh3d(fallback_mesh),
-        MeshMaterial3d(ui_item_assets.hand_material.clone()),
+        Mesh3d(hand_mesh),
+        MeshMaterial3d(hand_material),
         Transform::default(),
         Visibility::Hidden,
         RenderLayers::layer(FIRST_PERSON_ITEM_RENDER_LAYER),
@@ -1338,15 +1545,28 @@ fn spawn_ui_item_models(
                     RenderLayers::layer(UI_ITEM_RENDER_LAYER),
                 ));
             }
+
+            preview.spawn((
+                InventoryPlayerPreviewHeldItemUi,
+                Mesh3d(fallback_mesh.clone()),
+                MeshMaterial3d(ui_item_assets.material.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+                RenderLayers::layer(UI_ITEM_RENDER_LAYER),
+            ));
         });
     }
 }
 
 fn fixed_tick_simulation(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     look: Res<LookState>,
     inventory_ui: Res<InventoryUiState>,
     pause_menu: Res<PauseMenuState>,
+    chat_input: Res<ChatInputState>,
+    mut look_bob_state: ResMut<LookBobState>,
+    mut player_walk_animation: ResMut<PlayerWalkAnimationState>,
     mut sprint_state: ResMut<SprintInputState>,
     mut item_in_hand_state: ResMut<ItemInHandAnimationState>,
     mut player_render_position: ResMut<PlayerRenderPosition>,
@@ -1362,11 +1582,23 @@ fn fixed_tick_simulation(
         return;
     }
 
+    let pitch_degrees = look.pitch_radians.to_degrees();
+    let yaw_degrees = look.yaw_radians.to_degrees();
+    look_bob_state.pitch_old_degrees = look_bob_state.pitch_degrees;
+    look_bob_state.pitch_degrees = pitch_degrees;
+    look_bob_state.yaw_old_degrees = look_bob_state.yaw_degrees;
+    look_bob_state.yaw_degrees = yaw_degrees;
+
+    look_bob_state.x_bob_old_degrees = look_bob_state.x_bob_degrees;
+    look_bob_state.y_bob_old_degrees = look_bob_state.y_bob_degrees;
+    look_bob_state.x_bob_degrees += (pitch_degrees - look_bob_state.x_bob_degrees) * 0.5;
+    look_bob_state.y_bob_degrees += (yaw_degrees - look_bob_state.y_bob_degrees) * 0.5;
+
     let mut input = MovementInput::default();
     let mut local_strafe = 0.0;
     let mut local_forward = 0.0;
 
-    if !inventory_ui.open {
+    if !inventory_ui.open && !chat_input.open {
         if keys.pressed(KeyCode::KeyA) {
             local_strafe -= 1.0;
         }
@@ -1386,18 +1618,34 @@ fn fixed_tick_simulation(
     input.strafe = world_strafe;
     input.forward = world_forward;
 
-    let sprint_modifier_held = keys.pressed(KeyCode::ControlLeft)
-        || keys.pressed(KeyCode::ControlRight)
-        || keys.pressed(KeyCode::ShiftLeft)
-        || keys.pressed(KeyCode::ShiftRight);
+    let sneaking_held = !inventory_ui.open
+        && !chat_input.open
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+    input.sneak = sneaking_held;
+
+    let sprint_modifier_held =
+        keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let is_using_item = !inventory_ui.open
+        && !chat_input.open
+        && mouse.pressed(MouseButton::Right)
+        && game
+            .session
+            .player()
+            .inventory
+            .selected_stack()
+            .is_some_and(|stack| {
+                held_item_use_animation_for_item(stack.item_id) != HeldItemUseAnimation::None
+            });
     update_sprint_from_cxx_rules(
         &mut game.session,
         &mut sprint_state,
         local_forward,
         sprint_modifier_held,
+        sneaking_held,
+        is_using_item,
     );
 
-    if !inventory_ui.open {
+    if !inventory_ui.open && !chat_input.open {
         if keys.just_pressed(KeyCode::Space) {
             game.session.register_jump_tap();
         }
@@ -1424,13 +1672,43 @@ fn fixed_tick_simulation(
         let player_position = session.player().position;
         player_render_position.current = world_vec3_to_bevy(player_position);
 
+        player_walk_animation.walk_dist_old = player_walk_animation.walk_dist;
+        player_walk_animation.bob_old = player_walk_animation.bob;
+        player_walk_animation.age_ticks += 1.0;
+
+        let x_delta = player_render_position.current.x - player_render_position.previous.x;
+        let z_delta = player_render_position.current.z - player_render_position.previous.z;
+        let horizontal_movement = (x_delta * x_delta + z_delta * z_delta).sqrt();
+        player_walk_animation.walk_dist += horizontal_movement * 0.6;
+
+        let mut target_bob = horizontal_movement;
+        if target_bob > 0.1 {
+            target_bob = 0.1;
+        }
+
+        let player = session.player();
+        if !player.on_ground || player.health <= 0 {
+            target_bob = 0.0;
+        }
+
+        player_walk_animation.bob += (target_bob - player_walk_animation.bob) * 0.4;
+
         let selected_slot = session.player().inventory.selected_hotbar_slot();
-        let selected_block_id = session
-            .player()
-            .inventory
-            .selected_stack()
-            .and_then(|stack| block_id_for_item(stack.item_id));
+        let selected_stack = session.player().inventory.selected_stack();
+        let selected_block_id = selected_stack.and_then(|stack| block_id_for_item(stack.item_id));
         item_in_hand_state.tick(selected_slot, selected_block_id);
+
+        let use_animation =
+            if !inventory_ui.open && !chat_input.open && mouse.pressed(MouseButton::Right) {
+                selected_stack
+                    .map(|stack| held_item_use_animation_for_item(stack.item_id))
+                    .unwrap_or(HeldItemUseAnimation::None)
+            } else {
+                HeldItemUseAnimation::None
+            };
+
+        item_in_hand_state.tick_use_animation(use_animation);
+        item_in_hand_state.set_defending(use_animation == HeldItemUseAnimation::Block);
     }
     lifecycle.controller.tick_once();
     consume_runtime_lifecycle_events(&mut lifecycle, &mut lifecycle_hooks);
@@ -1487,11 +1765,16 @@ fn handle_inventory_toggle(
     mut inventory_ui: ResMut<InventoryUiState>,
     mut creative_ui: ResMut<CreativeInventoryState>,
     pause_menu: Res<PauseMenuState>,
+    chat_input: Res<ChatInputState>,
     mut commands: Commands,
     runtime_audio: Res<RuntimeAudio>,
     mut capture_state: ResMut<CursorCaptureState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
+    if chat_input.open {
+        return;
+    }
+
     if game.session.player().is_dead || pause_menu.open {
         if inventory_ui.open {
             inventory_ui.open = false;
@@ -1550,13 +1833,14 @@ fn handle_pause_menu_toggle(
     keys: Res<ButtonInput<KeyCode>>,
     game: Res<GameState>,
     inventory_ui: Res<InventoryUiState>,
+    chat_input: Res<ChatInputState>,
     mut pause_menu: ResMut<PauseMenuState>,
     mut commands: Commands,
     runtime_audio: Res<RuntimeAudio>,
     mut capture_state: ResMut<CursorCaptureState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if game.session.player().is_dead || inventory_ui.open {
+    if game.session.player().is_dead || inventory_ui.open || chat_input.open {
         return;
     }
 
@@ -1589,15 +1873,150 @@ fn handle_pause_menu_toggle(
     }
 }
 
+fn handle_chat_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut keyboard_input_events: EventReader<KeyboardInput>,
+    inventory_ui: Res<InventoryUiState>,
+    pause_menu: Res<PauseMenuState>,
+    mut game: ResMut<GameState>,
+    mut chat_input: ResMut<ChatInputState>,
+    mut capture_state: ResMut<CursorCaptureState>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if inventory_ui.open || pause_menu.open || game.session.player().is_dead {
+        chat_input.open = false;
+        chat_input.text.clear();
+        return;
+    }
+
+    let Ok(mut window) = windows.get_single_mut() else {
+        return;
+    };
+
+    if !chat_input.open {
+        let opened_with_slash = keys.just_pressed(KeyCode::Slash);
+        let opened_with_enter =
+            keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
+        let opened_with_chat = keys.just_pressed(KeyCode::KeyT);
+
+        if opened_with_slash || opened_with_enter || opened_with_chat {
+            chat_input.open = true;
+            chat_input.text.clear();
+            if opened_with_slash {
+                chat_input.text.push('/');
+            }
+            release_cursor(&mut window);
+            capture_state.captured = false;
+            capture_state.just_captured = false;
+            keyboard_input_events.clear();
+        }
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::Escape) {
+        close_chat_input(&mut chat_input, &mut capture_state, &mut window);
+        return;
+    }
+
+    let mut submit = false;
+    for event in keyboard_input_events.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+
+        match &event.logical_key {
+            Key::Enter => {
+                submit = true;
+                break;
+            }
+            Key::Backspace => {
+                chat_input.text.pop();
+            }
+            Key::Character(value) => {
+                if value.chars().any(|character| character.is_control()) {
+                    continue;
+                }
+                chat_input.text.push_str(value);
+            }
+            Key::Space => {
+                chat_input.text.push(' ');
+            }
+            _ => {}
+        }
+    }
+
+    if submit {
+        let command = chat_input.text.trim().to_string();
+        execute_chat_command(&command, &mut game);
+        close_chat_input(&mut chat_input, &mut capture_state, &mut window);
+    }
+}
+
+fn close_chat_input(
+    chat_input: &mut ChatInputState,
+    capture_state: &mut CursorCaptureState,
+    window: &mut Window,
+) {
+    chat_input.open = false;
+    chat_input.text.clear();
+    capture_state.captured = capture_cursor(window);
+    capture_state.just_captured = capture_state.captured;
+}
+
+fn execute_chat_command(command_text: &str, game: &mut GameState) {
+    if command_text.is_empty() || !command_text.starts_with('/') {
+        return;
+    }
+
+    let mut command_parts = command_text[1..].split_whitespace();
+    let Some(command_name) = command_parts.next() else {
+        return;
+    };
+
+    if command_name.eq_ignore_ascii_case("gamemode") || command_name.eq_ignore_ascii_case("gm") {
+        let Some(mode_raw) = command_parts.next() else {
+            let current_mode = if game.session.player().allow_flight {
+                "creative"
+            } else {
+                "survival"
+            };
+            println!("Current gamemode: {current_mode}");
+            return;
+        };
+
+        let mode = mode_raw.to_ascii_lowercase();
+        match mode.as_str() {
+            "0" | "s" | "survival" => {
+                game.session.set_player_allow_flight(false);
+                println!("Gamemode set to survival");
+            }
+            "1" | "c" | "creative" => {
+                game.session.set_player_allow_flight(true);
+                println!("Gamemode set to creative");
+            }
+            _ => {
+                println!("Unknown gamemode '{mode_raw}'. Use survival or creative.");
+            }
+        }
+    } else {
+        println!("Unknown command '{command_name}'");
+    }
+}
+
 fn handle_cursor_capture(
     mouse: Res<ButtonInput<MouseButton>>,
     game: Res<GameState>,
     inventory_ui: Res<InventoryUiState>,
     pause_menu: Res<PauseMenuState>,
+    chat_input: Res<ChatInputState>,
     mut capture_state: ResMut<CursorCaptureState>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     capture_state.just_captured = false;
+
+    if chat_input.open {
+        return;
+    }
 
     if !allow_cursor_capture(
         inventory_ui.open,
@@ -1632,10 +2051,9 @@ fn capture_cursor(window: &mut Window) -> bool {
 }
 
 fn update_camera(
-    time: Res<Time>,
     fixed_time: Res<Time<Fixed>>,
     game: Res<GameState>,
-    mut view_bobbing: ResMut<ViewBobbingState>,
+    player_walk_animation: Res<PlayerWalkAnimationState>,
     player_render_position: Res<PlayerRenderPosition>,
     look: Res<LookState>,
     mut camera_query: Query<&mut Transform, With<PlayerCamera>>,
@@ -1649,32 +2067,31 @@ fn update_camera(
         .previous
         .lerp(player_render_position.current, alpha);
     let player_state = game.session.player();
-    let horizontal_speed = (player_state.velocity.x * player_state.velocity.x
-        + player_state.velocity.z * player_state.velocity.z)
-        .sqrt();
-    let bob_speed_scale = (horizontal_speed / WALK_SPEED_BLOCKS_PER_SECOND).clamp(0.0, 1.3);
 
-    let target_intensity = if player_state.on_ground && !player_state.is_flying {
-        bob_speed_scale
-    } else {
-        0.0
-    };
-    let blend = (time.delta_secs() * 10.0).clamp(0.0, 1.0);
-    view_bobbing.intensity += (target_intensity - view_bobbing.intensity) * blend;
+    let mut eye = Vec3::new(player.x, player.y + CAMERA_EYE_HEIGHT, player.z);
+    let forward = bevy_forward_from_look(&look);
 
-    let bob_offset = if view_bobbing.intensity > 0.01 {
-        let phase = time.elapsed_secs() * (std::f32::consts::TAU * VIEW_BOB_FREQUENCY_HZ);
-        Vec3::new(
-            phase.sin() * VIEW_BOB_HORIZONTAL_AMPLITUDE * view_bobbing.intensity,
-            (phase * 2.0).sin() * VIEW_BOB_VERTICAL_AMPLITUDE * view_bobbing.intensity,
-            0.0,
-        )
-    } else {
-        Vec3::ZERO
-    };
-    let eye = Vec3::new(player.x, player.y + CAMERA_EYE_HEIGHT, player.z) + bob_offset;
-    let focus = eye + bevy_forward_from_look(&look) * 8.0;
+    if player_state.on_ground && !player_state.is_flying {
+        let walk_dist = player_walk_animation.walk_dist_old
+            + (player_walk_animation.walk_dist - player_walk_animation.walk_dist_old) * alpha;
+        let bob = player_walk_animation.bob_old
+            + (player_walk_animation.bob - player_walk_animation.bob_old) * alpha;
+        let phase = -walk_dist * std::f32::consts::PI;
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        eye += right * (phase.sin() * bob * 0.5);
+        eye += Vec3::Y * (-(phase.cos().abs()) * bob);
 
+        let focus = eye + forward * 8.0;
+        let mut transformed = Transform::from_translation(eye).looking_at(focus, Vec3::Y);
+        let roll = (phase.sin() * bob * 3.0).to_radians();
+        let pitch = (phase.cos().abs() * bob * 5.0).to_radians();
+        transformed.rotation =
+            transformed.rotation * Quat::from_rotation_z(roll) * Quat::from_rotation_x(pitch);
+        *camera_transform = transformed;
+        return;
+    }
+
+    let focus = eye + forward * 8.0;
     *camera_transform = Transform::from_translation(eye).looking_at(focus, Vec3::Y);
 }
 
@@ -1692,7 +2109,7 @@ fn sync_cloud_layer(
         .lerp(player_render_position.current, alpha);
 
     let tick_time = cloud_tick_time(lifecycle.controller.time().total_ticks, alpha);
-    let (u_offset, v_offset) = cloud_uv_offset(f64::from(player.x), f64::from(player.z), tick_time);
+    let cloud_motion = cloud_uv_motion(f64::from(player.x), f64::from(player.z), tick_time);
     let y = cloud_world_y(player.y);
     let eye_block = BlockPos::new(
         player.x.floor() as i32,
@@ -1702,7 +2119,11 @@ fn sync_cloud_layer(
     let cloud_visible = clouds_visible_for_camera_block(game.blocks.block_id(eye_block));
 
     for (mut transform, mesh_3d, mut visibility) in &mut cloud_query {
-        transform.translation = Vec3::new(player.x, y, player.z);
+        transform.translation = Vec3::new(
+            player.x - cloud_motion.x_offset_blocks,
+            y,
+            player.z - cloud_motion.z_offset_blocks,
+        );
         *visibility = if cloud_visible {
             Visibility::Visible
         } else {
@@ -1712,7 +2133,7 @@ fn sync_cloud_layer(
         let Some(mesh) = meshes.get_mut(&mesh_3d.0) else {
             continue;
         };
-        update_cloud_mesh_uvs(mesh, u_offset, v_offset);
+        update_cloud_mesh_uvs(mesh, cloud_motion.u_offset, cloud_motion.v_offset);
     }
 }
 
@@ -1723,10 +2144,48 @@ fn update_cloud_mesh_uvs(mesh: &mut Mesh, u_offset: f32, v_offset: f32) {
         return;
     };
 
+    let Some(VertexAttributeValues::Float32x3(normals)) =
+        mesh.attribute(Mesh::ATTRIBUTE_NORMAL).cloned()
+    else {
+        return;
+    };
+
+    if positions.len() != normals.len() || positions.len() % 4 != 0 {
+        return;
+    }
+
     let mut uvs = Vec::with_capacity(positions.len());
-    for position in positions {
-        let u = position[0] * CLOUD_UV_SCALE + u_offset;
-        let v = position[2] * CLOUD_UV_SCALE + v_offset;
+    for quad_start in (0..positions.len()).step_by(4) {
+        let mut center_x = 0.0;
+        let mut center_z = 0.0;
+        for vertex_index in quad_start..(quad_start + 4) {
+            center_x += positions[vertex_index][0];
+            center_z += positions[vertex_index][2];
+        }
+        center_x *= 0.25;
+        center_z *= 0.25;
+
+        let normal = normals[quad_start];
+        if normal[0] > 0.5 {
+            center_x -= CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
+        } else if normal[0] < -0.5 {
+            center_x += CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
+        }
+
+        if normal[2] > 0.5 {
+            center_z -= CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
+        } else if normal[2] < -0.5 {
+            center_z += CLOUD_ADVANCED_TEXEL_WORLD_SIZE * 0.5;
+        }
+
+        let texel_x = (center_x / CLOUD_ADVANCED_TEXEL_WORLD_SIZE).floor();
+        let texel_z = (center_z / CLOUD_ADVANCED_TEXEL_WORLD_SIZE).floor();
+        let u = (texel_x + 0.5) * CLOUD_TEXEL_UV_SCALE + u_offset;
+        let v = (texel_z + 0.5) * CLOUD_TEXEL_UV_SCALE + v_offset;
+
+        uvs.push([u, v]);
+        uvs.push([u, v]);
+        uvs.push([u, v]);
         uvs.push([u, v]);
     }
 
@@ -1776,6 +2235,8 @@ fn update_sprint_from_cxx_rules(
     sprint_state: &mut SprintInputState,
     local_forward: f32,
     sprint_modifier_held: bool,
+    sneaking: bool,
+    using_item: bool,
 ) {
     if sprint_state.trigger_time > 0 {
         sprint_state.trigger_time = sprint_state.trigger_time.saturating_sub(1);
@@ -1794,7 +2255,12 @@ fn update_sprint_from_cxx_rules(
     let on_ground = session.player().on_ground;
     let flying_now = session.player().allow_flight && session.player().is_flying;
 
-    if on_ground && !session.player().is_sprinting && enough_food_to_sprint {
+    if on_ground
+        && !session.player().is_sprinting
+        && enough_food_to_sprint
+        && !sneaking
+        && !using_item
+    {
         if !sprint_state.was_running && running_now {
             if sprint_state.trigger_time == 0 {
                 sprint_state.trigger_time = SPRINT_TRIGGER_WINDOW_TICKS;
@@ -1809,14 +2275,20 @@ fn update_sprint_from_cxx_rules(
         }
     }
 
-    let keyboard_sprint =
-        sprint_modifier_held && (running_now || flying_now) && enough_food_to_sprint;
+    let keyboard_sprint = sprint_modifier_held
+        && local_forward > 0.0
+        && on_ground
+        && enough_food_to_sprint
+        && !sneaking
+        && !using_item;
     if keyboard_sprint {
         session.set_player_sprinting(true);
     }
 
-    let keep_sprinting = running_now || (flying_now && sprint_modifier_held);
-    if session.player().is_sprinting && (!keep_sprinting || !enough_food_to_sprint) {
+    let keep_sprinting = running_now || (flying_now && sprint_modifier_held && local_forward > 0.0);
+    if session.player().is_sprinting
+        && (!keep_sprinting || !enough_food_to_sprint || sneaking || using_item)
+    {
         session.set_player_sprinting(false);
     }
 
@@ -2153,17 +2625,19 @@ fn env_f64(name: &str, default: f64) -> f64 {
 
 fn handle_hotbar_selection(
     keys: Res<ButtonInput<KeyCode>>,
+    mut mouse_wheel_events: EventReader<MouseWheel>,
     inventory_ui: Res<InventoryUiState>,
     pause_menu: Res<PauseMenuState>,
+    chat_input: Res<ChatInputState>,
     mut commands: Commands,
     runtime_audio: Res<RuntimeAudio>,
     mut game: ResMut<GameState>,
 ) {
-    if inventory_ui.open || pause_menu.open || game.session.player().is_dead {
+    if chat_input.open || inventory_ui.open || pause_menu.open || game.session.player().is_dead {
         return;
     }
 
-    let selected_slot = if keys.just_pressed(KeyCode::Digit1) {
+    let mut selected_slot = if keys.just_pressed(KeyCode::Digit1) {
         Some(0)
     } else if keys.just_pressed(KeyCode::Digit2) {
         Some(1)
@@ -2185,6 +2659,30 @@ fn handle_hotbar_selection(
         None
     };
 
+    if selected_slot.is_none() {
+        let mut wheel_delta = 0.0_f32;
+        for event in mouse_wheel_events.read() {
+            wheel_delta += event.y;
+        }
+
+        let wheel_steps = if wheel_delta > 0.0 {
+            wheel_delta.ceil() as i32
+        } else if wheel_delta < 0.0 {
+            wheel_delta.floor() as i32
+        } else {
+            0
+        };
+
+        if wheel_steps != 0 {
+            let current = i32::try_from(game.session.player().inventory.selected_hotbar_slot())
+                .expect("hotbar slot index should fit i32");
+            let hotbar_slots =
+                i32::try_from(HOTBAR_SLOTS).expect("hotbar slot count should fit i32");
+            let next = (current - wheel_steps).rem_euclid(hotbar_slots) as usize;
+            selected_slot = Some(next);
+        }
+    }
+
     if let Some(slot) = selected_slot
         && slot < HOTBAR_SLOTS
     {
@@ -2199,11 +2697,12 @@ fn handle_item_drop(
     keys: Res<ButtonInput<KeyCode>>,
     inventory_ui: Res<InventoryUiState>,
     pause_menu: Res<PauseMenuState>,
+    chat_input: Res<ChatInputState>,
     mut commands: Commands,
     runtime_audio: Res<RuntimeAudio>,
     mut game: ResMut<GameState>,
 ) {
-    if inventory_ui.open || pause_menu.open || game.session.player().is_dead {
+    if chat_input.open || inventory_ui.open || pause_menu.open || game.session.player().is_dead {
         return;
     }
 
@@ -2222,7 +2721,15 @@ fn handle_item_drop(
     }
 }
 
-fn handle_debug_combat(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<GameState>) {
+fn handle_debug_combat(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat_input: Res<ChatInputState>,
+    mut game: ResMut<GameState>,
+) {
+    if chat_input.open {
+        return;
+    }
+
     if keys.just_pressed(KeyCode::KeyK) {
         let _ = game.session.apply_player_damage(4);
     }
@@ -2238,9 +2745,14 @@ fn handle_debug_combat(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<GameSta
 
 fn handle_debug_weather(
     keys: Res<ButtonInput<KeyCode>>,
+    chat_input: Res<ChatInputState>,
     mut lifecycle: ResMut<RuntimeLifecycle>,
     mut lifecycle_hooks: ResMut<RuntimeLifecycleHooks>,
 ) {
+    if chat_input.open {
+        return;
+    }
+
     let mut changed = false;
 
     if keys.just_pressed(KeyCode::F6) {
@@ -2265,6 +2777,7 @@ fn handle_block_interaction(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut game: ResMut<GameState>,
+    mut block_destroy_state: ResMut<BlockDestroyState>,
     mut item_in_hand_state: ResMut<ItemInHandAnimationState>,
     mut lifecycle: ResMut<RuntimeLifecycle>,
     look: Res<LookState>,
@@ -2278,17 +2791,28 @@ fn handle_block_interaction(
     perf_config: Res<PerfDebugConfig>,
 ) {
     if pause_menu.open || !cursor_capture.captured || cursor_capture.just_captured {
+        block_destroy_state.clear();
+        item_in_hand_state.set_defending(false);
         return;
     }
 
-    let (player_position, player_is_dead) = {
+    let (player_position, player_is_dead, selected_stack) = {
         let player = game.session.player();
-        (player.position, player.is_dead)
+        (
+            player.position,
+            player.is_dead,
+            player.inventory.selected_stack(),
+        )
     };
 
     if player_is_dead {
+        block_destroy_state.clear();
+        item_in_hand_state.set_defending(false);
         return;
     }
+
+    let selected_sword = selected_stack.is_some_and(|stack| is_sword_item(stack.item_id));
+    item_in_hand_state.set_defending(selected_sword && mouse.pressed(MouseButton::Right));
 
     let eye = lce_rust::world::Vec3::new(
         player_position.x,
@@ -2312,11 +2836,20 @@ fn handle_block_interaction(
     let mut changed_block = None;
     let mut placed_block_id = None;
     let mut broken_block = None;
+    let mut sword_failed_break = None;
     let mut did_swing = false;
     let mut did_place_or_use_item = false;
 
+    let left_mouse_down = mouse.pressed(MouseButton::Left);
+    if !left_mouse_down {
+        block_destroy_state.clear();
+    }
+
+    let left_click_triggered = mouse.just_pressed(MouseButton::Left)
+        || (left_mouse_down && item_in_hand_state.can_repeat_left_click_action());
+
     if mouse.just_pressed(MouseButton::Right)
-        && let Some(selected_stack) = game.session.player().inventory.selected_stack()
+        && let Some(selected_stack) = selected_stack
     {
         match selected_stack.item_id {
             331 => {
@@ -2453,6 +2986,18 @@ fn handle_block_interaction(
                             BlockAction::Place { block_id },
                         )
                     {
+                        let placement_face = placement_face_for_target(solid_hit, target);
+                        if let Some(data) = block_placement_data(
+                            &game.blocks,
+                            block_id,
+                            target,
+                            placement_face,
+                            player_position,
+                            look.yaw_radians,
+                        ) {
+                            game.blocks.set_block_data(target, data);
+                        }
+
                         if !game.session.player().allow_flight {
                             let _ = game.session.player_mut().inventory.consume_selected(1);
                         }
@@ -2467,19 +3012,82 @@ fn handle_block_interaction(
         }
     }
 
-    if mouse.just_pressed(MouseButton::Left) {
+    if left_click_triggered {
         did_swing = true;
+    }
 
+    if left_mouse_down {
         if let Some(hit) = solid_hit {
             let previous_block_id = game.blocks.block_id(hit.block);
             let previous_block_aux = u16::from(game.blocks.block_data(hit.block));
-            if apply_block_action(&mut game.blocks, hit.block, BlockAction::Break) {
-                changed = true;
-                changed_block = Some(hit.block);
-                if previous_block_id != 0 {
-                    broken_block = Some((previous_block_id, previous_block_aux));
+
+            if selected_sword {
+                block_destroy_state.clear();
+                if left_click_triggered && previous_block_id != 0 {
+                    sword_failed_break = Some((previous_block_id, previous_block_aux, hit.block));
                 }
+            } else if previous_block_id != 0 {
+                let creative_break = game.session.player().allow_flight;
+
+                if creative_break {
+                    if left_click_triggered
+                        && apply_block_action(&mut game.blocks, hit.block, BlockAction::Break)
+                    {
+                        changed = true;
+                        changed_block = Some(hit.block);
+                        broken_block = Some((previous_block_id, previous_block_aux));
+                    }
+                    block_destroy_state.clear();
+                } else if left_click_triggered {
+                    if block_destroy_state.target != Some(hit.block) {
+                        block_destroy_state.target = Some(hit.block);
+                        block_destroy_state.progress = 0.0;
+                        block_destroy_state.destroy_swings = 0;
+                    } else if block_destroy_state.cooldown_swings > 0 {
+                        block_destroy_state.cooldown_swings -= 1;
+                    } else {
+                        let progress_per_tick =
+                            block_destroy_progress_per_tick(previous_block_id, selected_stack);
+                        if progress_per_tick > 0.0 {
+                            block_destroy_state.progress += progress_per_tick * 3.0;
+                        }
+
+                        if block_destroy_state.destroy_swings % BLOCK_BREAK_HIT_SOUND_SWING_INTERVAL
+                            == 0
+                        {
+                            let played = play_block_interaction_sound(
+                                &mut commands,
+                                &runtime_audio,
+                                previous_block_id,
+                                hit.block.x,
+                                hit.block.y,
+                                hit.block.z,
+                                false,
+                            );
+                            if !played {
+                                play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.20);
+                            }
+                        }
+                        block_destroy_state.destroy_swings =
+                            block_destroy_state.destroy_swings.saturating_add(1);
+
+                        if block_destroy_state.progress >= 1.0
+                            && apply_block_action(&mut game.blocks, hit.block, BlockAction::Break)
+                        {
+                            changed = true;
+                            changed_block = Some(hit.block);
+                            broken_block = Some((previous_block_id, previous_block_aux));
+                            block_destroy_state.progress = 0.0;
+                            block_destroy_state.destroy_swings = 0;
+                            block_destroy_state.cooldown_swings = BLOCK_BREAK_COOLDOWN_SWINGS;
+                        }
+                    }
+                }
+            } else {
+                block_destroy_state.clear();
             }
+        } else {
+            block_destroy_state.clear();
         }
     }
 
@@ -2489,6 +3097,32 @@ fn handle_block_interaction(
 
     if did_place_or_use_item {
         item_in_hand_state.item_placed();
+    }
+
+    if let Some((block_id, block_aux, target)) = sword_failed_break {
+        spawn_block_hit_particles(
+            &mut commands,
+            &mut meshes,
+            &block_assets.opaque_material,
+            block_id,
+            block_aux,
+            target.x,
+            target.y,
+            target.z,
+        );
+
+        let played = play_block_interaction_sound(
+            &mut commands,
+            &runtime_audio,
+            block_id,
+            target.x,
+            target.y,
+            target.z,
+            false,
+        );
+        if !played {
+            play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.30);
+        }
     }
 
     if changed {
@@ -2594,6 +3228,220 @@ fn handle_block_interaction(
             error!("failed to save world snapshot after block interaction: {error}");
         }
     }
+}
+
+fn sync_block_break_overlay(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    game: Res<GameState>,
+    block_destroy_state: Res<BlockDestroyState>,
+    block_assets: Res<BlockRenderAssets>,
+    inventory_ui: Res<InventoryUiState>,
+    pause_menu: Res<PauseMenuState>,
+    cursor_capture: Res<CursorCaptureState>,
+    mut overlay_state: ResMut<BlockBreakOverlayState>,
+    mut overlay_query: Query<(Entity, &mut Mesh3d, &mut Visibility), With<BlockBreakOverlay>>,
+) {
+    let can_show = allow_first_person_view(
+        cursor_capture.captured,
+        inventory_ui.open,
+        pause_menu.open,
+        game.session.player().is_dead,
+    );
+
+    let Some(target) = block_destroy_state.target else {
+        if let Some(entity) = overlay_state.entity
+            && let Ok((_, _, mut visibility)) = overlay_query.get_mut(entity)
+        {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    if !can_show || block_destroy_state.progress <= 0.0 {
+        if let Some(entity) = overlay_state.entity
+            && let Ok((_, _, mut visibility)) = overlay_query.get_mut(entity)
+        {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let stage = ((block_destroy_state.progress.clamp(0.0, 0.999) * 10.0).floor() as u8).min(9);
+
+    let needs_rebuild = overlay_state.target != Some(target)
+        || overlay_state.stage != stage
+        || overlay_state.entity.is_none();
+
+    if !needs_rebuild {
+        if let Some(entity) = overlay_state.entity
+            && let Ok((_, _, mut visibility)) = overlay_query.get_mut(entity)
+        {
+            *visibility = Visibility::Visible;
+            return;
+        }
+    }
+
+    let Some(mesh_data) = build_block_break_overlay_mesh_data(&game.blocks, target, stage) else {
+        if let Some(entity) = overlay_state.entity
+            && let Ok((_, _, mut visibility)) = overlay_query.get_mut(entity)
+        {
+            *visibility = Visibility::Hidden;
+        }
+        return;
+    };
+
+    let rebuilt_mesh = terrain_mesh_to_bevy_mesh(mesh_data);
+
+    if let Some(entity) = overlay_state.entity
+        && let Ok((_, mut mesh, mut visibility)) = overlay_query.get_mut(entity)
+    {
+        if let Some(existing_mesh) = meshes.get_mut(&mesh.0) {
+            *existing_mesh = rebuilt_mesh;
+        } else {
+            mesh.0 = meshes.add(rebuilt_mesh);
+        }
+        *visibility = Visibility::Visible;
+    } else {
+        let entity = commands
+            .spawn((
+                BlockBreakOverlay,
+                Mesh3d(meshes.add(rebuilt_mesh)),
+                MeshMaterial3d(block_assets.fluid_material.clone()),
+                Transform::default(),
+                Visibility::Visible,
+            ))
+            .id();
+        overlay_state.entity = Some(entity);
+    }
+
+    overlay_state.target = Some(target);
+    overlay_state.stage = stage;
+}
+
+fn render_target_block_outline(
+    mut gizmos: Gizmos,
+    game: Res<GameState>,
+    look: Res<LookState>,
+    inventory_ui: Res<InventoryUiState>,
+    pause_menu: Res<PauseMenuState>,
+    cursor_capture: Res<CursorCaptureState>,
+) {
+    if !allow_first_person_view(
+        cursor_capture.captured,
+        inventory_ui.open,
+        pause_menu.open,
+        game.session.player().is_dead,
+    ) {
+        return;
+    }
+
+    let player = game.session.player();
+    let eye = lce_rust::world::Vec3::new(
+        player.position.x,
+        player.position.y + CAMERA_EYE_HEIGHT,
+        player.position.z,
+    );
+
+    let eye_block = BlockPos::new(
+        eye.x.floor() as i32,
+        eye.y.floor() as i32,
+        eye.z.floor() as i32,
+    );
+    let eye_block_id = game.blocks.block_id(eye_block);
+    if eye_block_id == WATER_SOURCE_BLOCK_ID || eye_block_id == WATER_FLOWING_BLOCK_ID {
+        return;
+    }
+
+    let forward = forward_vector_from_yaw_pitch(look.yaw_radians, look.pitch_radians);
+    let Some(hit) = raycast_first_solid_block(
+        &game.blocks,
+        eye,
+        forward,
+        INTERACTION_DISTANCE_BLOCKS as f32,
+    ) else {
+        return;
+    };
+
+    let block_id = game.blocks.block_id(hit.block);
+    if block_id == 0 {
+        return;
+    }
+
+    let bounds = selection_outline_bounds(&game.blocks, hit.block, block_id);
+    draw_selection_outline(&mut gizmos, hit.block, bounds);
+}
+
+fn selection_outline_bounds(world: &BlockWorld, block: BlockPos, block_id: u16) -> [f32; 6] {
+    if matches!(
+        block_id,
+        50 | REDSTONE_TORCH_OFF_BLOCK_ID | REDSTONE_TORCH_ON_BLOCK_ID
+    ) {
+        return torch_render_bounds(world.block_data(block) & 0x7);
+    }
+
+    if block_id == LEVER_BLOCK_ID {
+        return lever_render_bounds(world.block_data(block) & 0x7);
+    }
+
+    [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+}
+
+fn torch_render_bounds(data: u8) -> [f32; 6] {
+    match data {
+        1 => [0.0, 0.2, 0.35, 0.3, 0.8, 0.65],
+        2 => [0.7, 0.2, 0.35, 1.0, 0.8, 0.65],
+        3 => [0.35, 0.2, 0.0, 0.65, 0.8, 0.3],
+        4 => [0.35, 0.2, 0.7, 0.65, 0.8, 1.0],
+        _ => [0.4, 0.0, 0.4, 0.6, 0.6, 0.6],
+    }
+}
+
+fn lever_render_bounds(data: u8) -> [f32; 6] {
+    match data {
+        1 => [0.0, 0.2, 0.3125, 0.375, 0.8, 0.6875],
+        2 => [0.625, 0.2, 0.3125, 1.0, 0.8, 0.6875],
+        3 => [0.3125, 0.2, 0.0, 0.6875, 0.8, 0.375],
+        4 => [0.3125, 0.2, 0.625, 0.6875, 0.8, 1.0],
+        5 | 6 => [0.25, 0.0, 0.25, 0.75, 0.6, 0.75],
+        0 | 7 => [0.25, 0.4, 0.25, 0.75, 1.0, 0.75],
+        _ => [0.25, 0.0, 0.25, 0.75, 0.6, 0.75],
+    }
+}
+
+fn draw_selection_outline(gizmos: &mut Gizmos, block: BlockPos, bounds: [f32; 6]) {
+    let [bx0, by0, bz0, bx1, by1, bz1] = bounds;
+    let x0 = block.x as f32 + bx0 - HIT_OUTLINE_GROW;
+    let y0 = block.y as f32 + by0 - HIT_OUTLINE_GROW;
+    let z0 = block.z as f32 + bz0 - HIT_OUTLINE_GROW;
+    let x1 = block.x as f32 + bx1 + HIT_OUTLINE_GROW;
+    let y1 = block.y as f32 + by1 + HIT_OUTLINE_GROW;
+    let z1 = block.z as f32 + bz1 + HIT_OUTLINE_GROW;
+
+    let c000 = Vec3::new(x0, y0, z0);
+    let c100 = Vec3::new(x1, y0, z0);
+    let c010 = Vec3::new(x0, y1, z0);
+    let c110 = Vec3::new(x1, y1, z0);
+    let c001 = Vec3::new(x0, y0, z1);
+    let c101 = Vec3::new(x1, y0, z1);
+    let c011 = Vec3::new(x0, y1, z1);
+    let c111 = Vec3::new(x1, y1, z1);
+
+    let color = Color::srgba(0.0, 0.0, 0.0, 0.4);
+    gizmos.line(c000, c100, color);
+    gizmos.line(c100, c101, color);
+    gizmos.line(c101, c001, color);
+    gizmos.line(c001, c000, color);
+
+    gizmos.line(c010, c110, color);
+    gizmos.line(c110, c111, color);
+    gizmos.line(c111, c011, color);
+    gizmos.line(c011, c010, color);
+
+    gizmos.line(c000, c010, color);
+    gizmos.line(c100, c110, color);
+    gizmos.line(c101, c111, color);
+    gizmos.line(c001, c011, color);
 }
 
 fn next_break_particle_random(seed: &mut u32) -> f32 {
@@ -2802,6 +3650,82 @@ fn play_sound_with_pitch(
     };
 
     commands.spawn((AudioPlayer::new(sound.clone()), playback));
+}
+
+fn spawn_block_hit_particles(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    material: &Handle<StandardMaterial>,
+    block_id: u16,
+    block_aux: u16,
+    block_x: i32,
+    block_y: i32,
+    block_z: i32,
+) {
+    let (tile_x, tile_y) = terrain_break_particle_tile(block_id, block_aux);
+    let mut particle_meshes = vec![None; 16];
+    let base_seed = (block_x as u32).wrapping_mul(73_856_093)
+        ^ (block_y as u32).wrapping_mul(19_349_663)
+        ^ (block_z as u32).wrapping_mul(83_492_791)
+        ^ (block_id as u32).wrapping_mul(2_654_435_761)
+        ^ 0x9E37_79B9;
+
+    let subdivisions = BREAK_PARTICLE_SUBDIVISIONS as f32;
+    for particle_index in 0..BLOCK_HIT_PARTICLE_COUNT {
+        let mut seed = base_seed ^ (particle_index as u32).wrapping_mul(1_597_334_677);
+        let xx = (next_break_particle_random(&mut seed) * subdivisions)
+            .floor()
+            .clamp(0.0, subdivisions - 1.0);
+        let yy = (next_break_particle_random(&mut seed) * subdivisions)
+            .floor()
+            .clamp(0.0, subdivisions - 1.0);
+        let zz = (next_break_particle_random(&mut seed) * subdivisions)
+            .floor()
+            .clamp(0.0, subdivisions - 1.0);
+
+        let xp = block_x as f32 + (xx + 0.5) / subdivisions;
+        let yp = block_y as f32 + (yy + 0.5) / subdivisions;
+        let zp = block_z as f32 + (zz + 0.5) / subdivisions;
+
+        let mut velocity = Vec3::new(
+            (next_break_particle_random(&mut seed) * 2.0 - 1.0) * 0.12,
+            next_break_particle_random(&mut seed) * 0.10,
+            (next_break_particle_random(&mut seed) * 2.0 - 1.0) * 0.12,
+        );
+        velocity.y += 0.03;
+
+        let speed = (next_break_particle_random(&mut seed) * 0.5 + 0.5) * 0.14;
+        let length = velocity.length().max(0.0001);
+        velocity = (velocity / length) * speed;
+
+        let size = next_break_particle_random(&mut seed) * 0.35 + 0.45;
+        let scale = BREAK_PARTICLE_SCALE_MULTIPLIER * 0.45 * size;
+        let lifetime_ticks = 1.5 / (next_break_particle_random(&mut seed) * 0.9 + 0.1);
+        let subtile_u = (next_break_particle_random(&mut seed) * 4.0).floor() as u8;
+        let subtile_v = (next_break_particle_random(&mut seed) * 4.0).floor() as u8;
+        let mesh_index = usize::from(subtile_u.min(3)) * 4 + usize::from(subtile_v.min(3));
+        let mesh_handle = particle_meshes[mesh_index]
+            .get_or_insert_with(|| {
+                meshes.add(build_break_particle_mesh(
+                    tile_x,
+                    tile_y,
+                    subtile_u.min(3),
+                    subtile_v.min(3),
+                ))
+            })
+            .clone();
+
+        commands.spawn((
+            BreakParticle {
+                velocity,
+                remaining_lifetime_ticks: lifetime_ticks,
+            },
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(Vec3::new(xp, yp, zp)).with_scale(Vec3::splat(scale)),
+            Visibility::Visible,
+        ));
+    }
 }
 
 fn spawn_block_break_particles(
@@ -3087,6 +4011,15 @@ fn handle_creative_inventory_clicks(
             Without<CreativeTabButtonUi>,
         ),
     >,
+    mut hotbar_interactions: Query<
+        (&Interaction, &CreativeHotbarSlotUi),
+        (
+            Changed<Interaction>,
+            With<Button>,
+            Without<CreativeTabButtonUi>,
+            Without<CreativeSelectorSlotButtonUi>,
+        ),
+    >,
 ) {
     if !inventory_ui.open || !game.session.player().allow_flight {
         return;
@@ -3153,6 +4086,152 @@ fn handle_creative_inventory_clicks(
                 .or(runtime_audio.click_sfx.as_ref()),
             0.30,
         );
+    }
+
+    for (interaction, hotbar_slot) in &mut hotbar_interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let slot = hotbar_slot.slot;
+        let had_stack = game
+            .session
+            .player()
+            .inventory
+            .get(slot)
+            .ok()
+            .flatten()
+            .is_some();
+        let _ = game.session.player_mut().inventory.select_hotbar_slot(slot);
+
+        if had_stack {
+            let _ = game.session.player_mut().inventory.set(slot, None);
+            play_sound(
+                &mut commands,
+                runtime_audio
+                    .pop_sfx
+                    .as_ref()
+                    .or(runtime_audio.click_sfx.as_ref()),
+                0.30,
+            );
+        } else {
+            play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.28);
+        }
+    }
+}
+
+fn handle_inventory_slot_drag(
+    mouse: Res<ButtonInput<MouseButton>>,
+    inventory_ui: Res<InventoryUiState>,
+    creative_ui: Res<CreativeInventoryState>,
+    pause_menu: Res<PauseMenuState>,
+    mut drag_state: ResMut<InventoryDragState>,
+    mut commands: Commands,
+    runtime_audio: Res<RuntimeAudio>,
+    mut game: ResMut<GameState>,
+    mut slot_interactions: Query<
+        (&Interaction, &InventorySlotUi),
+        (With<Button>, Without<CraftingRecipeButtonUi>),
+    >,
+) {
+    let show_inventory = inventory_ui.open
+        && (!game.session.player().allow_flight || creative_ui.show_player_inventory_tab)
+        && !pause_menu.open
+        && !game.session.player().is_dead;
+
+    if !show_inventory {
+        if let Some(held) = drag_state.held_stack
+            && let Some(source_slot) = drag_state.source_slot
+        {
+            let destination_empty = game
+                .session
+                .player()
+                .inventory
+                .get(source_slot)
+                .ok()
+                .flatten()
+                .is_none();
+            if destination_empty {
+                let _ = game
+                    .session
+                    .player_mut()
+                    .inventory
+                    .set(source_slot, Some(held));
+            } else {
+                let _ = game.session.player_mut().inventory.add_item_with_aux(
+                    held.item_id,
+                    held.aux,
+                    u32::from(held.count),
+                );
+            }
+        }
+        drag_state.clear();
+        return;
+    }
+
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    for (interaction, slot_ui) in &mut slot_interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let slot = slot_ui.slot;
+        let slot_stack = game
+            .session
+            .player()
+            .inventory
+            .get(slot)
+            .expect("inventory slot index should be valid");
+
+        if let Some(held_stack) = drag_state.held_stack {
+            let source_hotbar_slot = drag_state
+                .source_slot
+                .is_some_and(|source| source < HOTBAR_SLOTS);
+            if game.session.player().allow_flight && source_hotbar_slot && slot >= HOTBAR_SLOTS {
+                drag_state.clear();
+                play_sound(
+                    &mut commands,
+                    runtime_audio
+                        .pop_sfx
+                        .as_ref()
+                        .or(runtime_audio.click_sfx.as_ref()),
+                    0.30,
+                );
+                continue;
+            }
+
+            if slot_stack.is_none() {
+                let _ = game
+                    .session
+                    .player_mut()
+                    .inventory
+                    .set(slot, Some(held_stack));
+                drag_state.clear();
+            } else {
+                let _ = game
+                    .session
+                    .player_mut()
+                    .inventory
+                    .set(slot, Some(held_stack));
+                drag_state.held_stack = slot_stack;
+                drag_state.source_slot = Some(slot);
+            }
+
+            play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.28);
+            continue;
+        }
+
+        let Some(slot_stack) = slot_stack else {
+            continue;
+        };
+
+        let _ = game.session.player_mut().inventory.set(slot, None);
+        drag_state.held_stack = Some(slot_stack);
+        drag_state.source_slot = Some(slot);
+        play_sound(&mut commands, runtime_audio.click_sfx.as_ref(), 0.26);
     }
 }
 
@@ -3635,6 +4714,34 @@ fn setup_ui_overlay(
         TextColor(Color::WHITE),
     ));
 
+    commands
+        .spawn((
+            ChatRootUi,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                bottom: Val::Px(12.0),
+                height: Val::Px(30.0),
+                display: Display::None,
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.72)),
+        ))
+        .with_children(|root| {
+            root.spawn((
+                ChatInputTextUi,
+                Text::new("> _"),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+        });
+
     if let Some(icons_texture_path) = runtime_assets.0.icons_texture_asset_path.as_ref() {
         commands
             .spawn((
@@ -3694,6 +4801,8 @@ fn setup_ui_overlay(
 
     spawn_hotbar_ui(commands, asset_server, runtime_assets);
     spawn_health_hud(commands, asset_server, runtime_assets);
+    spawn_hunger_hud(commands, asset_server, runtime_assets);
+    spawn_xp_hud(commands, asset_server, runtime_assets);
     spawn_inventory_ui(commands, asset_server, runtime_assets);
     spawn_creative_inventory_ui(commands, asset_server, runtime_assets);
     spawn_pause_menu_ui(commands, asset_server, runtime_assets);
@@ -4031,13 +5140,25 @@ fn items_icon_tile_for_item(item_id: u16) -> Option<(u8, u8)> {
         392 => Some((7, 7)),
         393 => Some((6, 7)),
         394 => Some((6, 8)),
+        395 => Some((12, 13)),
         396 => Some((6, 9)),
         397 => Some((0, 14)),
         398 => Some((6, 6)),
+        399 => Some((11, 9)),
         400 => Some((8, 9)),
+        401 => Some((12, 9)),
+        402 => Some((12, 10)),
         403 => Some((15, 12)),
+        404 => Some((9, 5)),
         405 => Some((5, 10)),
         406 => Some((12, 12)),
+        407 => Some((12, 7)),
+        408 => Some((11, 7)),
+        417 => Some((9, 2)),
+        418 => Some((9, 4)),
+        419 => Some((9, 3)),
+        420 => Some((10, 4)),
+        421 => Some((10, 3)),
         _ => None,
     }
 }
@@ -4418,9 +5539,8 @@ fn spawn_health_hud(
     };
 
     let icons_texture = asset_server.load(icons_texture_path.clone());
-    let row_width = (HEART_ICON_SIZE + HEART_ICON_STRIDE * 9.0) * HOTBAR_GUI_SCALE;
+    let row_width = HUD_STATUS_ROW_WIDTH * HOTBAR_GUI_SCALE;
     let hotbar_width = 182.0 * HOTBAR_GUI_SCALE;
-    let hotbar_height = 22.0 * HOTBAR_GUI_SCALE;
 
     commands
         .spawn((
@@ -4429,7 +5549,7 @@ fn spawn_health_hud(
                 position_type: PositionType::Absolute,
                 left: Val::Percent(50.0),
                 margin: UiRect::left(Val::Px(-hotbar_width * 0.5)),
-                bottom: Val::Px(HOTBAR_BOTTOM_OFFSET + hotbar_height + 6.0),
+                bottom: Val::Px(status_row_bottom_offset()),
                 width: Val::Px(row_width),
                 height: Val::Px(HEART_ICON_SIZE * HOTBAR_GUI_SCALE),
                 ..default()
@@ -4466,6 +5586,151 @@ fn spawn_health_hud(
                 ));
             }
         });
+}
+
+fn spawn_hunger_hud(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    runtime_assets: &RuntimeAssets,
+) {
+    let Some(icons_texture_path) = runtime_assets.0.icons_texture_asset_path.as_ref() else {
+        return;
+    };
+
+    let icons_texture = asset_server.load(icons_texture_path.clone());
+    let hotbar_width = HUD_XP_BAR_WIDTH * HOTBAR_GUI_SCALE;
+
+    commands
+        .spawn((
+            HungerHudRootUi,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(-hotbar_width * 0.5)),
+                bottom: Val::Px(status_row_bottom_offset()),
+                width: Val::Px(hotbar_width),
+                height: Val::Px(HEART_ICON_SIZE * HOTBAR_GUI_SCALE),
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            for index in 0..10 {
+                let left = ((173.0 - index as f32 * HEART_ICON_STRIDE) * HOTBAR_GUI_SCALE).max(0.0);
+                let size = HEART_ICON_SIZE * HOTBAR_GUI_SCALE;
+
+                root.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(left),
+                        width: Val::Px(size),
+                        height: Val::Px(size),
+                        ..default()
+                    },
+                    ImageNode::new(icons_texture.clone()).with_rect(Rect::new(
+                        16.0,
+                        HUD_FOOD_UV_Y,
+                        25.0,
+                        HUD_FOOD_UV_Y + HEART_ICON_SIZE,
+                    )),
+                ));
+
+                root.spawn((
+                    HungerFillUi { index },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(left),
+                        width: Val::Px(size),
+                        height: Val::Px(size),
+                        ..default()
+                    },
+                    ImageNode::new(icons_texture.clone()).with_rect(Rect::new(
+                        52.0,
+                        HUD_FOOD_UV_Y,
+                        61.0,
+                        HUD_FOOD_UV_Y + HEART_ICON_SIZE,
+                    )),
+                ));
+            }
+        });
+}
+
+fn spawn_xp_hud(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    runtime_assets: &RuntimeAssets,
+) {
+    let Some(icons_texture_path) = runtime_assets.0.icons_texture_asset_path.as_ref() else {
+        return;
+    };
+
+    let icons_texture = asset_server.load(icons_texture_path.clone());
+    let bar_width = HUD_XP_BAR_WIDTH * HOTBAR_GUI_SCALE;
+    let xp_bar_height = HUD_XP_BAR_HEIGHT * HOTBAR_GUI_SCALE;
+
+    commands
+        .spawn((
+            XpHudRootUi,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(-bar_width * 0.5)),
+                bottom: Val::Px(xp_bar_bottom_offset()),
+                width: Val::Px(bar_width),
+                height: Val::Px(xp_bar_height),
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    width: Val::Px(bar_width),
+                    height: Val::Px(xp_bar_height),
+                    ..default()
+                },
+                ImageNode::new(icons_texture.clone()).with_rect(Rect::new(
+                    0.0,
+                    HUD_XP_UV_BG_Y,
+                    HUD_XP_BAR_WIDTH,
+                    HUD_XP_UV_BG_Y + HUD_XP_BAR_HEIGHT,
+                )),
+            ));
+
+            root.spawn((
+                XpHudFillUi,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    width: Val::Px(0.0),
+                    height: Val::Px(xp_bar_height),
+                    ..default()
+                },
+                ImageNode::new(icons_texture).with_rect(Rect::new(
+                    0.0,
+                    HUD_XP_UV_FILL_Y,
+                    HUD_XP_BAR_WIDTH,
+                    HUD_XP_UV_FILL_Y + HUD_XP_BAR_HEIGHT,
+                )),
+            ));
+        });
+
+    commands.spawn((
+        XpLevelTextUi,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            margin: UiRect::left(Val::Px(-12.0 * HOTBAR_GUI_SCALE)),
+            bottom: Val::Px(hotbar_top_offset() + 18.0 * HOTBAR_GUI_SCALE),
+            ..default()
+        },
+        Text::new(""),
+        TextFont {
+            font_size: 9.0 * HOTBAR_GUI_SCALE,
+            ..default()
+        },
+        TextColor(Color::srgb_u8(0x80, 0xFF, 0x20)),
+    ));
 }
 
 fn spawn_inventory_ui(
@@ -4563,6 +5828,7 @@ fn spawn_inventory_ui(
                         };
 
                         let mut slot_node = panel.spawn((
+                            Button,
                             InventorySlotUi { slot },
                             Node {
                                 position_type: PositionType::Absolute,
@@ -4749,6 +6015,35 @@ fn spawn_creative_inventory_ui(
                         });
                 }
 
+                panel
+                    .spawn((
+                        Button,
+                        CreativeInventoryPlayerTabButtonUi,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(183.0 * INVENTORY_GUI_SCALE),
+                            top: Val::Px(14.0 * INVENTORY_GUI_SCALE),
+                            width: Val::Px(10.0 * INVENTORY_GUI_SCALE),
+                            height: Val::Px(16.0 * INVENTORY_GUI_SCALE),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb_u8(0xB2, 0xB2, 0xB2)),
+                        BorderColor(Color::srgb_u8(0x1A, 0x1A, 0x1A)),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new("P"),
+                            TextFont {
+                                font_size: 6.0 * INVENTORY_GUI_SCALE,
+                                ..default()
+                            },
+                            TextColor(Color::srgb_u8(0x38, 0x38, 0x38)),
+                        ));
+                    });
+
                 panel.spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -4840,6 +6135,7 @@ fn spawn_creative_inventory_ui(
 
                 for slot in 0..HOTBAR_SLOTS {
                     let mut hotbar_slot = panel.spawn((
+                        Button,
                         CreativeHotbarSlotUi { slot },
                         Node {
                             position_type: PositionType::Absolute,
@@ -5241,6 +6537,9 @@ fn sync_gameplay_overlay_visibility(
             With<HotbarRootUi>,
             With<CrosshairRootUi>,
             With<HealthHudRootUi>,
+            With<HungerHudRootUi>,
+            With<XpHudRootUi>,
+            With<XpLevelTextUi>,
         )>,
     >,
 ) {
@@ -5394,6 +6693,7 @@ fn sync_first_person_item_in_hand(
     inventory_ui: Res<InventoryUiState>,
     pause_menu: Res<PauseMenuState>,
     cursor_capture: Res<CursorCaptureState>,
+    look_bob_state: Res<LookBobState>,
     ui_icon_atlases: Res<UiIconAtlasHandles>,
     ui_item_assets: Res<UiItemRenderAssets>,
     item_in_hand_state: Res<ItemInHandAnimationState>,
@@ -5422,7 +6722,7 @@ fn sync_first_person_item_in_hand(
         ),
     >,
 ) {
-    let is_gameplay_view = allow_first_person_view(
+    let is_gameplay_view = allow_first_person_item_view(
         cursor_capture.captured,
         inventory_ui.open,
         pause_menu.open,
@@ -5431,9 +6731,22 @@ fn sync_first_person_item_in_hand(
     let partial_tick = fixed_time.overstep_fraction().clamp(0.0, 1.0);
     let attack_anim = item_in_hand_state.attack_anim(partial_tick);
     let equip_height = item_in_hand_state.equip_height(partial_tick);
+    let use_animation = item_in_hand_state.use_animation();
+    let use_ticks = item_in_hand_state.use_ticks(partial_tick);
+    let xr = look_bob_state.pitch_old_degrees
+        + (look_bob_state.pitch_degrees - look_bob_state.pitch_old_degrees) * partial_tick;
+    let yr = look_bob_state.yaw_old_degrees
+        + (look_bob_state.yaw_degrees - look_bob_state.yaw_old_degrees) * partial_tick;
+    let xrr = look_bob_state.x_bob_old_degrees
+        + (look_bob_state.x_bob_degrees - look_bob_state.x_bob_old_degrees) * partial_tick;
+    let yrr = look_bob_state.y_bob_old_degrees
+        + (look_bob_state.y_bob_degrees - look_bob_state.y_bob_old_degrees) * partial_tick;
+    let wobble_pitch_degrees = (xr - xrr) * 0.1;
+    let wobble_yaw_degrees = (yr - yrr) * 0.1;
 
     let selected_stack = game.session.player().inventory.selected_stack();
     let selected_item_id = selected_stack.map(|stack| stack.item_id);
+    let selected_is_map = selected_item_id == Some(MAP_ITEM_ID);
     let selected_aux = selected_stack.map(|stack| stack.aux).unwrap_or(0);
     let selected_prefers_icon = selected_item_id
         .map(|item_id| item_prefers_icon_overlay(item_id, selected_aux))
@@ -5472,7 +6785,18 @@ fn sync_first_person_item_in_hand(
             if let Some(block_id) = selected_block_id {
                 mesh.0 = ui_item_mesh_handle(block_id, &mut mesh_cache, &mut meshes);
                 material.0 = ui_item_assets.material.clone();
-                *transform = first_person_held_item_transform(attack_anim, equip_height);
+                let mut rendered = if selected_is_map {
+                    first_person_map_transform(attack_anim, equip_height, xr)
+                } else {
+                    first_person_held_item_transform(
+                        attack_anim,
+                        equip_height,
+                        use_animation,
+                        use_ticks,
+                    )
+                };
+                apply_first_person_wobble(&mut rendered, wobble_pitch_degrees, wobble_yaw_degrees);
+                *transform = rendered;
                 *visibility = Visibility::Visible;
                 continue;
             }
@@ -5482,7 +6806,18 @@ fn sync_first_person_item_in_hand(
                 material.0 = selected_icon_material
                     .clone()
                     .expect("material should exist");
-                *transform = first_person_held_icon_item_transform(attack_anim, equip_height);
+                let mut rendered = if selected_is_map {
+                    first_person_map_transform(attack_anim, equip_height, xr)
+                } else {
+                    first_person_held_icon_item_transform(
+                        attack_anim,
+                        equip_height,
+                        use_animation,
+                        use_ticks,
+                    )
+                };
+                apply_first_person_wobble(&mut rendered, wobble_pitch_degrees, wobble_yaw_degrees);
+                *transform = rendered;
                 *visibility = Visibility::Visible;
                 continue;
             }
@@ -5497,8 +6832,9 @@ fn sync_first_person_item_in_hand(
                 continue;
             }
 
-            mesh.0 = ui_item_mesh_handle(3, &mut mesh_cache, &mut meshes);
-            *transform = first_person_hand_transform(attack_anim, equip_height);
+            let mut rendered = first_person_hand_transform(attack_anim, equip_height);
+            apply_first_person_wobble(&mut rendered, wobble_pitch_degrees, wobble_yaw_degrees);
+            *transform = rendered;
             *visibility = Visibility::Visible;
         }
     }
@@ -5545,42 +6881,169 @@ fn sync_first_person_item_in_hand(
 
 fn sync_health_ui(
     game: Res<GameState>,
-    mut health_root_query: Query<&mut Node, (With<HealthHudRootUi>, Without<HeartFillUi>)>,
-    mut heart_fill_query: Query<
-        (&HeartFillUi, &mut Node, &mut ImageNode),
-        Without<HealthHudRootUi>,
-    >,
+    inventory_ui: Res<InventoryUiState>,
+    pause_menu: Res<PauseMenuState>,
+    mut ui_queries: ParamSet<(
+        Query<&mut Node, (With<HealthHudRootUi>, Without<HeartFillUi>)>,
+        Query<&mut Node, (With<HungerHudRootUi>, Without<HungerFillUi>)>,
+        Query<&mut Node, (With<XpHudRootUi>, Without<XpHudFillUi>)>,
+        Query<(&mut Node, &mut ImageNode), (With<XpHudFillUi>, Without<XpHudRootUi>)>,
+        Query<(&mut Node, &mut Text), With<XpLevelTextUi>>,
+        Query<(&HeartFillUi, &mut Node, &mut ImageNode), Without<HealthHudRootUi>>,
+        Query<(&HungerFillUi, &mut Node, &mut ImageNode), Without<HungerHudRootUi>>,
+    )>,
 ) {
-    let show_health = !game.session.player().allow_flight;
+    let show_health = !game.session.player().allow_flight
+        && !hide_gameplay_overlay(
+            inventory_ui.open,
+            pause_menu.open,
+            game.session.player().is_dead,
+        );
 
-    for mut root_node in &mut health_root_query {
-        root_node.display = if show_health {
-            Display::Flex
-        } else {
-            Display::None
-        };
+    {
+        let mut query = ui_queries.p0();
+        for mut root_node in &mut query {
+            root_node.display = if show_health {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
+
+    {
+        let mut query = ui_queries.p1();
+        for mut root_node in &mut query {
+            root_node.display = if show_health {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
+
+    {
+        let mut query = ui_queries.p2();
+        for mut root_node in &mut query {
+            root_node.display = if show_health {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
+
+    {
+        let mut query = ui_queries.p4();
+        for (mut text_node, mut level_text) in &mut query {
+            text_node.display = if show_health {
+                Display::Flex
+            } else {
+                Display::None
+            };
+
+            if !show_health {
+                level_text.0.clear();
+            }
+        }
     }
 
     if !show_health {
-        for (_, mut node, _) in &mut heart_fill_query {
-            node.display = Display::None;
+        {
+            let mut query = ui_queries.p5();
+            for (_, mut node, _) in &mut query {
+                node.display = Display::None;
+            }
         }
+
+        {
+            let mut query = ui_queries.p6();
+            for (_, mut node, _) in &mut query {
+                node.display = Display::None;
+            }
+        }
+
+        {
+            let mut query = ui_queries.p3();
+            for (mut xp_fill_node, _) in &mut query {
+                xp_fill_node.display = Display::None;
+                xp_fill_node.width = Val::Px(0.0);
+            }
+        }
+
         return;
     }
 
     let health_points = i32::from(game.session.player().health.max(0));
 
-    for (heart_fill, mut node, mut image_node) in &mut heart_fill_query {
-        let remaining = health_points - (heart_fill.index as i32 * 2);
+    {
+        let mut query = ui_queries.p5();
+        for (heart_fill, mut node, mut image_node) in &mut query {
+            let remaining = health_points - (heart_fill.index as i32 * 2);
 
-        if remaining >= 2 {
-            node.display = Display::Flex;
-            image_node.rect = Some(Rect::new(52.0, 0.0, 61.0, 9.0));
-        } else if remaining == 1 {
-            node.display = Display::Flex;
-            image_node.rect = Some(Rect::new(61.0, 0.0, 70.0, 9.0));
-        } else {
-            node.display = Display::None;
+            if remaining >= 2 {
+                node.display = Display::Flex;
+                image_node.rect = Some(Rect::new(52.0, 0.0, 61.0, 9.0));
+            } else if remaining == 1 {
+                node.display = Display::Flex;
+                image_node.rect = Some(Rect::new(61.0, 0.0, 70.0, 9.0));
+            } else {
+                node.display = Display::None;
+            }
+        }
+    }
+
+    let food_points = i32::from(game.session.player().food_level.clamp(0, 20));
+    {
+        let mut query = ui_queries.p6();
+        for (hunger_fill, mut node, mut image_node) in &mut query {
+            let remaining = food_points - (hunger_fill.index as i32 * 2);
+
+            if remaining >= 2 {
+                node.display = Display::Flex;
+                image_node.rect = Some(Rect::new(52.0, HUD_FOOD_UV_Y, 61.0, HUD_FOOD_UV_Y + 9.0));
+            } else if remaining == 1 {
+                node.display = Display::Flex;
+                image_node.rect = Some(Rect::new(61.0, HUD_FOOD_UV_Y, 70.0, HUD_FOOD_UV_Y + 9.0));
+            } else {
+                node.display = Display::None;
+            }
+        }
+    }
+
+    let xp_progress = game.session.player().experience_progress.clamp(0.0, 1.0);
+    let xp_fill_pixels = ((HUD_XP_BAR_WIDTH + 1.0) * xp_progress).floor();
+    {
+        let mut query = ui_queries.p3();
+        for (mut xp_fill_node, mut xp_fill_image) in &mut query {
+            if xp_fill_pixels <= 0.0 {
+                xp_fill_node.display = Display::None;
+                xp_fill_node.width = Val::Px(0.0);
+                continue;
+            }
+
+            xp_fill_node.display = Display::Flex;
+            xp_fill_node.width = Val::Px(xp_fill_pixels * HOTBAR_GUI_SCALE);
+            xp_fill_image.rect = Some(Rect::new(
+                0.0,
+                HUD_XP_UV_FILL_Y,
+                xp_fill_pixels,
+                HUD_XP_UV_FILL_Y + HUD_XP_BAR_HEIGHT,
+            ));
+        }
+    }
+
+    let xp_level = game.session.player().experience_level.max(0);
+    {
+        let mut query = ui_queries.p4();
+        for (mut text_node, mut level_text) in &mut query {
+            if xp_level > 0 {
+                text_node.display = Display::Flex;
+                level_text.0 = xp_level.to_string();
+            } else {
+                text_node.display = Display::None;
+                level_text.0.clear();
+            }
         }
     }
 }
@@ -5846,20 +7309,43 @@ fn sync_inventory_ui(
 }
 
 fn sync_inventory_player_preview(
+    fixed_time: Res<Time<Fixed>>,
     game: Res<GameState>,
     inventory_ui: Res<InventoryUiState>,
     creative_ui: Res<CreativeInventoryState>,
+    player_walk_animation: Res<PlayerWalkAnimationState>,
+    item_in_hand_state: Res<ItemInHandAnimationState>,
+    ui_item_assets: Res<UiItemRenderAssets>,
+    mut mesh_cache: ResMut<UiItemMeshCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
     window_query: Query<&Window, With<PrimaryWindow>>,
     mut root_query: Query<
         (&mut Transform, &mut Visibility),
         (
             With<InventoryPlayerPreviewRootUi>,
             Without<InventoryPlayerPreviewPartUi>,
+            Without<InventoryPlayerPreviewHeldItemUi>,
         ),
     >,
     mut part_query: Query<
         (&InventoryPlayerPreviewPartUi, &mut Transform),
-        Without<InventoryPlayerPreviewRootUi>,
+        (
+            Without<InventoryPlayerPreviewRootUi>,
+            Without<InventoryPlayerPreviewHeldItemUi>,
+        ),
+    >,
+    mut held_item_query: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &mut Mesh3d,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
+        (
+            With<InventoryPlayerPreviewHeldItemUi>,
+            Without<InventoryPlayerPreviewRootUi>,
+            Without<InventoryPlayerPreviewPartUi>,
+        ),
     >,
 ) {
     let show_survival_inventory = inventory_ui.open
@@ -5869,11 +7355,17 @@ fn sync_inventory_player_preview(
         for (_, mut visibility) in &mut root_query {
             *visibility = Visibility::Hidden;
         }
+        for (_, mut visibility, _, _) in &mut held_item_query {
+            *visibility = Visibility::Hidden;
+        }
         return;
     }
 
     let Ok(window) = window_query.get_single() else {
         for (_, mut visibility) in &mut root_query {
+            *visibility = Visibility::Hidden;
+        }
+        for (_, mut visibility, _, _) in &mut held_item_query {
             *visibility = Visibility::Hidden;
         }
         return;
@@ -5899,6 +7391,157 @@ fn sync_inventory_player_preview(
     let body_yaw = yaw_base * INVENTORY_PLAYER_PREVIEW_ROTATE_SCALE_DEGREES.to_radians();
     let head_yaw = yaw_base * INVENTORY_PLAYER_PREVIEW_HEAD_YAW_SCALE_DEGREES.to_radians();
     let head_pitch = -pitch_base * INVENTORY_PLAYER_PREVIEW_ROTATE_SCALE_DEGREES.to_radians();
+    let player = game.session.player();
+    let partial_tick = fixed_time.overstep_fraction().clamp(0.0, 1.0);
+    let walk_time = player_walk_animation.walk_dist_old
+        + (player_walk_animation.walk_dist - player_walk_animation.walk_dist_old) * partial_tick;
+    let walk_speed = player_walk_animation.bob_old
+        + (player_walk_animation.bob - player_walk_animation.bob_old) * partial_tick;
+    let bob_time = player_walk_animation.age_ticks + partial_tick;
+    let attack_time = item_in_hand_state.attack_anim(partial_tick).clamp(0.0, 1.0);
+    let use_animation = item_in_hand_state.use_animation();
+    let use_ticks = item_in_hand_state.use_ticks(partial_tick);
+    let eating_pose = use_animation == HeldItemUseAnimation::EatDrink && use_ticks > 0.0;
+    let bow_pose = use_animation == HeldItemUseAnimation::Bow && use_ticks > 0.0;
+    let blocking_pose = use_animation == HeldItemUseAnimation::Block && use_ticks > 0.0;
+    let holding_right_hand = if player.inventory.selected_stack().is_some() {
+        1.0
+    } else {
+        0.0
+    };
+    let horizontal_speed =
+        (player.velocity.x * player.velocity.x + player.velocity.z * player.velocity.z).sqrt();
+    let sneaking = player.is_sneaking;
+    let riding = player.is_riding;
+    let idle = !sneaking && !riding && horizontal_speed <= 0.01;
+
+    let mut body_part_yaw = 0.0_f32;
+    let mut body_part_pitch = 0.0_f32;
+
+    let mut head_position = Vec3::new(0.0, 0.0, 0.0);
+    let mut body_position = Vec3::new(0.0, 0.0, 0.0);
+
+    let mut right_arm_position = Vec3::new(-5.0, 2.0, 0.0);
+    let mut left_arm_position = Vec3::new(5.0, 2.0, 0.0);
+    let mut right_leg_position = Vec3::new(-1.9, 12.0, 0.0);
+    let mut left_leg_position = Vec3::new(1.9, 12.0, 0.0);
+
+    let mut right_arm_x_rot = (walk_time * 0.6662 + std::f32::consts::PI).cos() * walk_speed;
+    let mut left_arm_x_rot = (walk_time * 0.6662).cos() * walk_speed;
+    let mut right_arm_y_rot = 0.0_f32;
+    let mut left_arm_y_rot = 0.0_f32;
+    let mut right_arm_z_rot = 0.0_f32;
+    let mut left_arm_z_rot = 0.0_f32;
+
+    let mut right_leg_x_rot = (walk_time * 0.6662).cos() * 1.4 * walk_speed;
+    let mut left_leg_x_rot = (walk_time * 0.6662 + std::f32::consts::PI).cos() * 1.4 * walk_speed;
+    let mut right_leg_y_rot = 0.0_f32;
+    let mut left_leg_y_rot = 0.0_f32;
+
+    if riding {
+        right_arm_x_rot += -std::f32::consts::FRAC_PI_2 * 0.4;
+        left_arm_x_rot += -std::f32::consts::FRAC_PI_2 * 0.4;
+        right_leg_x_rot = -std::f32::consts::FRAC_PI_2 * 0.8;
+        left_leg_x_rot = -std::f32::consts::FRAC_PI_2 * 0.8;
+        right_leg_y_rot = std::f32::consts::FRAC_PI_2 * 0.2;
+        left_leg_y_rot = -std::f32::consts::FRAC_PI_2 * 0.2;
+    } else if idle {
+        right_leg_x_rot = -std::f32::consts::FRAC_PI_2;
+        left_leg_x_rot = -std::f32::consts::FRAC_PI_2;
+        right_leg_y_rot = std::f32::consts::FRAC_PI_2 * 0.2;
+        left_leg_y_rot = -std::f32::consts::FRAC_PI_2 * 0.2;
+    }
+
+    if holding_right_hand > 0.0 {
+        right_arm_x_rot = right_arm_x_rot * 0.5 - std::f32::consts::FRAC_PI_2 * 0.2;
+    }
+
+    if attack_time > 0.0 {
+        body_part_yaw = (attack_time.sqrt() * std::f32::consts::PI * 2.0).sin() * 0.2;
+        right_arm_position.z = body_part_yaw.sin() * 5.0;
+        right_arm_position.x = -body_part_yaw.cos() * 5.0;
+        left_arm_position.z = -body_part_yaw.sin() * 5.0;
+        left_arm_position.x = body_part_yaw.cos() * 5.0;
+
+        right_arm_y_rot += body_part_yaw;
+        left_arm_y_rot += body_part_yaw;
+        left_arm_x_rot += body_part_yaw;
+
+        let mut swing = 1.0 - attack_time;
+        swing *= swing;
+        swing *= swing;
+        swing = 1.0 - swing;
+
+        let aa = (swing * std::f32::consts::PI).sin();
+        let bb = (attack_time * std::f32::consts::PI).sin() * -(head_pitch - 0.7) * 0.75;
+        right_arm_x_rot -= aa * 1.2 + bb;
+        right_arm_y_rot += body_part_yaw * 2.0;
+        right_arm_z_rot = (attack_time * std::f32::consts::PI).sin() * -0.4;
+    }
+
+    if eating_pose {
+        let eat_swing = (use_ticks / EAT_DRINK_USE_DURATION_TICKS).clamp(0.0, 1.0);
+        let eat_t = (EAT_DRINK_USE_DURATION_TICKS - use_ticks).max(0.0);
+        let mut eat_inverse = 1.0 - eat_swing;
+        eat_inverse = eat_inverse.powi(9);
+        let eat_swing_smoothed = 1.0 - eat_inverse;
+        let eat_chomp = if eat_swing > 0.2 { 1.0 } else { 0.0 };
+        right_arm_x_rot = -(eat_t / 4.0 * std::f32::consts::PI).cos().abs() * 0.1 * eat_chomp * 2.0;
+        right_arm_y_rot -= eat_swing_smoothed * 0.5;
+        right_arm_x_rot -= eat_swing_smoothed * 1.2;
+    }
+
+    if sneaking {
+        body_part_pitch = 0.5;
+        right_arm_x_rot += 0.4;
+        left_arm_x_rot += 0.4;
+        right_leg_position.z = 4.0;
+        left_leg_position.z = 4.0;
+        right_arm_position.y = 2.0;
+        left_arm_position.y = 2.0;
+        right_leg_position.y = 9.0;
+        left_leg_position.y = 9.0;
+        head_position.y = 1.0;
+    } else {
+        body_part_pitch = 0.0;
+        right_leg_position.z = 0.1;
+        left_leg_position.z = 0.1;
+
+        if idle && !riding {
+            right_leg_position.y = 22.0;
+            left_leg_position.y = 22.0;
+            body_position.y = 10.0;
+            right_arm_position.y = 12.0;
+            left_arm_position.y = 12.0;
+            head_position.y = 10.0;
+        } else {
+            right_leg_position.y = 12.0;
+            left_leg_position.y = 12.0;
+            body_position.y = 0.0;
+            right_arm_position.y = 2.0;
+            left_arm_position.y = 2.0;
+            head_position.y = 0.0;
+        }
+    }
+
+    right_arm_z_rot += (bob_time * 0.09).cos() * 0.05 + 0.05;
+    left_arm_z_rot -= (bob_time * 0.09).cos() * 0.05 + 0.05;
+    right_arm_x_rot += (bob_time * 0.067).sin() * 0.05;
+    left_arm_x_rot -= (bob_time * 0.067).sin() * 0.05;
+
+    if bow_pose {
+        right_arm_z_rot = 0.0;
+        left_arm_z_rot = 0.0;
+        right_arm_y_rot = head_yaw - 0.1;
+        left_arm_y_rot = head_yaw + 0.5;
+        right_arm_x_rot = -std::f32::consts::FRAC_PI_2 + head_pitch;
+        left_arm_x_rot = -std::f32::consts::FRAC_PI_2 + head_pitch;
+        right_arm_z_rot += (bob_time * 0.09).cos() * 0.05 + 0.05;
+        left_arm_z_rot -= (bob_time * 0.09).cos() * 0.05 + 0.05;
+        right_arm_x_rot += (bob_time * 0.067).sin() * 0.05;
+        left_arm_x_rot -= (bob_time * 0.067).sin() * 0.05;
+    }
+
     let preview_center = inventory_player_preview_center();
 
     for (mut root_transform, mut visibility) in &mut root_query {
@@ -5914,15 +7557,171 @@ fn sync_inventory_player_preview(
     }
 
     for (part_ui, mut transform) in &mut part_query {
-        let spec = inventory_player_preview_part_spec(part_ui.part);
-        transform.translation = spec.position;
         transform.scale = Vec3::ONE;
-        transform.rotation = if part_ui.part == InventoryPlayerPreviewPart::Head {
-            Quat::from_rotation_y(head_yaw) * Quat::from_rotation_x(head_pitch)
-        } else {
-            Quat::IDENTITY
-        };
+        match part_ui.part {
+            InventoryPlayerPreviewPart::Head => {
+                transform.translation = head_position;
+                transform.rotation = model_part_rotation_from_cxx(head_pitch, head_yaw, 0.0);
+            }
+            InventoryPlayerPreviewPart::Body => {
+                transform.translation = body_position;
+                transform.rotation =
+                    model_part_rotation_from_cxx(body_part_pitch, body_part_yaw, 0.0);
+            }
+            InventoryPlayerPreviewPart::RightArm => {
+                transform.translation = right_arm_position;
+                transform.rotation =
+                    model_part_rotation_from_cxx(right_arm_x_rot, right_arm_y_rot, right_arm_z_rot);
+            }
+            InventoryPlayerPreviewPart::LeftArm => {
+                transform.translation = left_arm_position;
+                transform.rotation =
+                    model_part_rotation_from_cxx(left_arm_x_rot, left_arm_y_rot, left_arm_z_rot);
+            }
+            InventoryPlayerPreviewPart::RightLeg => {
+                transform.translation = right_leg_position;
+                transform.rotation =
+                    model_part_rotation_from_cxx(right_leg_x_rot, right_leg_y_rot, 0.0);
+            }
+            InventoryPlayerPreviewPart::LeftLeg => {
+                transform.translation = left_leg_position;
+                transform.rotation =
+                    model_part_rotation_from_cxx(left_leg_x_rot, left_leg_y_rot, 0.0);
+            }
+        }
     }
+
+    let selected_stack = player.inventory.selected_stack();
+    for (mut transform, mut visibility, mut mesh, mut material) in &mut held_item_query {
+        let Some(selected_stack) = selected_stack else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+
+        let selected_item_id = selected_stack.item_id;
+        let selected_aux = selected_stack.aux;
+        let selected_prefers_icon = item_prefers_icon_overlay(selected_item_id, selected_aux);
+        let selected_block_id = if selected_prefers_icon || selected_item_id > 255 {
+            None
+        } else {
+            Some(selected_item_id)
+        };
+
+        if let Some(block_id) = selected_block_id {
+            mesh.0 = ui_item_mesh_handle(block_id, &mut mesh_cache, &mut meshes);
+            material.0 = ui_item_assets.material.clone();
+        } else {
+            let Some(icon_mesh) = ui_item_icon_mesh_handle(
+                selected_item_id,
+                selected_aux,
+                &mut mesh_cache,
+                &mut meshes,
+            ) else {
+                *visibility = Visibility::Hidden;
+                continue;
+            };
+            let Some(icon_material) = icon_spec_for_item(selected_item_id, selected_aux).and_then(
+                |(atlas, _)| match atlas {
+                    UiIconAtlas::Terrain => Some(ui_item_assets.icon_material.clone()),
+                    UiIconAtlas::Items => ui_item_assets
+                        .items_material
+                        .clone()
+                        .or_else(|| Some(ui_item_assets.icon_material.clone())),
+                },
+            ) else {
+                *visibility = Visibility::Hidden;
+                continue;
+            };
+
+            mesh.0 = icon_mesh;
+            material.0 = icon_material;
+        }
+
+        let item_local = third_person_preview_item_transform(
+            selected_item_id,
+            selected_block_id.is_some(),
+            blocking_pose,
+        );
+        let arm_local = Transform {
+            translation: right_arm_position,
+            rotation: model_part_rotation_from_cxx(
+                right_arm_x_rot,
+                right_arm_y_rot,
+                right_arm_z_rot,
+            ),
+            scale: Vec3::ONE,
+        };
+
+        let arm_matrix = Mat4::from_scale_rotation_translation(
+            arm_local.scale,
+            arm_local.rotation,
+            arm_local.translation,
+        );
+        let item_matrix = Mat4::from_scale_rotation_translation(
+            item_local.scale,
+            item_local.rotation,
+            item_local.translation,
+        );
+        *transform = transform_from_opengl_sequence(arm_matrix * item_matrix);
+        *visibility = Visibility::Visible;
+    }
+}
+
+fn model_part_rotation_from_cxx(x_rot: f32, y_rot: f32, z_rot: f32) -> Quat {
+    Quat::from_rotation_z(z_rot) * Quat::from_rotation_y(y_rot) * Quat::from_rotation_x(x_rot)
+}
+
+fn third_person_preview_item_transform(
+    item_id: u16,
+    is_block_item: bool,
+    blocking_with_item: bool,
+) -> Transform {
+    let mut matrix = Mat4::IDENTITY;
+    matrix *= Mat4::from_translation(Vec3::new(-1.0, 7.0, 1.0));
+
+    if is_block_item {
+        let mut s = 8.0;
+        matrix *= Mat4::from_translation(Vec3::new(0.0, 3.0, -5.0));
+        s *= 0.75;
+        matrix *= Mat4::from_rotation_x(20.0_f32.to_radians());
+        matrix *= Mat4::from_rotation_y(45.0_f32.to_radians());
+        matrix *= Mat4::from_scale(Vec3::new(-s, -s, s));
+    } else if item_id == BOW_ITEM_ID {
+        let s = 10.0;
+        matrix *= Mat4::from_translation(Vec3::new(0.0, 2.0, 5.0));
+        matrix *= Mat4::from_rotation_y((-20.0_f32).to_radians());
+        matrix *= Mat4::from_scale(Vec3::new(s, -s, s));
+        matrix *= Mat4::from_rotation_x((-100.0_f32).to_radians());
+        matrix *= Mat4::from_rotation_y(45.0_f32.to_radians());
+    } else if is_hand_equipped_item(item_id) {
+        let s = 10.0;
+
+        if is_mirrored_art_item(item_id) {
+            matrix *= Mat4::from_rotation_z(180.0_f32.to_radians());
+            matrix *= Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0));
+        }
+
+        if blocking_with_item {
+            matrix *= Mat4::from_translation(Vec3::new(0.05, 0.0, -0.1));
+            matrix *= Mat4::from_rotation_y((-50.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_x((-10.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_z((-60.0_f32).to_radians());
+        }
+
+        matrix *= Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0));
+        matrix *= Mat4::from_scale(Vec3::new(s, -s, s));
+        matrix *= Mat4::from_rotation_x((-100.0_f32).to_radians());
+        matrix *= Mat4::from_rotation_y(45.0_f32.to_radians());
+    } else {
+        let s = 6.0;
+        matrix *= Mat4::from_translation(Vec3::new(4.0, 3.0, -3.0));
+        matrix *= Mat4::from_scale(Vec3::splat(s));
+        matrix *= Mat4::from_rotation_z(60.0_f32.to_radians());
+        matrix *= Mat4::from_rotation_x((-90.0_f32).to_radians());
+        matrix *= Mat4::from_rotation_z(20.0_f32.to_radians());
+    }
+
+    transform_from_opengl_sequence(matrix)
 }
 
 fn sync_creative_inventory_ui(
@@ -5983,10 +7782,12 @@ fn sync_creative_inventory_ui(
     mut hotbar_slot_query: Query<
         (
             &CreativeHotbarSlotUi,
+            &Interaction,
             &mut BackgroundColor,
             &mut BorderColor,
         ),
         (
+            With<Button>,
             Without<CreativeTabButtonUi>,
             Without<CreativeSelectorSlotButtonUi>,
         ),
@@ -6108,11 +7909,15 @@ fn sync_creative_inventory_ui(
     }
 
     let hotbar_states = collect_hotbar_state(&game.session.player().inventory);
-    for (slot_ui, mut background, mut border) in &mut hotbar_slot_query {
+    for (slot_ui, interaction, mut background, mut border) in &mut hotbar_slot_query {
         let slot_state = hotbar_states[slot_ui.slot];
+        let hovered = *interaction == Interaction::Hovered;
 
         if slot_state.selected {
             background.0 = Color::srgb_u8(0xA8, 0xA8, 0xA8);
+            border.0 = Color::srgb_u8(0xFF, 0xFF, 0xFF);
+        } else if hovered && slot_state.item_id.is_some() {
+            background.0 = Color::srgb_u8(0xBF, 0xBF, 0xBF);
             border.0 = Color::srgb_u8(0xFF, 0xFF, 0xFF);
         } else if slot_state.item_id.is_some() {
             background.0 = Color::srgb_u8(0x92, 0x92, 0x92);
@@ -6170,6 +7975,30 @@ fn sync_creative_inventory_ui(
         } else {
             *visibility = Visibility::Hidden;
         }
+    }
+}
+
+fn sync_chat_ui(
+    chat_input: Res<ChatInputState>,
+    mut chat_root_query: Query<&mut Node, (With<ChatRootUi>, Without<ChatInputTextUi>)>,
+    mut chat_text_query: Query<&mut Text, (With<ChatInputTextUi>, Without<ChatRootUi>)>,
+) {
+    for mut root_node in &mut chat_root_query {
+        root_node.display = if chat_input.open {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    let display_text = if chat_input.open {
+        format!("> {}_", chat_input.text)
+    } else {
+        String::new()
+    };
+
+    for mut text in &mut chat_text_query {
+        text.0 = display_text.clone();
     }
 }
 
@@ -6700,6 +8529,33 @@ fn build_ui_item_mesh(block_id: u16) -> Mesh {
     mesh
 }
 
+fn build_first_person_hand_mesh() -> Mesh {
+    let spec = inventory_player_preview_part_spec(InventoryPlayerPreviewPart::RightArm);
+    let mut positions = Vec::with_capacity(24);
+    let mut normals = Vec::with_capacity(24);
+    let mut uvs = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+
+    append_humanoid_box_mesh(&mut positions, &mut normals, &mut uvs, &mut indices, spec);
+
+    let model_scale = 1.0 / 16.0;
+    for position in &mut positions {
+        position[0] = (position[0] + spec.position.x) * model_scale;
+        position[1] = (position[1] + spec.position.y) * model_scale;
+        position[2] = (position[2] + spec.position.z) * model_scale;
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 fn build_break_particle_mesh(tile_x: u8, tile_y: u8, subtile_u: u8, subtile_v: u8) -> Mesh {
     let mut positions = Vec::with_capacity(24);
     let mut normals = Vec::with_capacity(24);
@@ -6780,16 +8636,61 @@ fn first_person_hand_transform(attack_anim: f32, equip_height: f32) -> Transform
     matrix *= Mat4::from_rotation_y((swing2 * 70.0).to_radians());
     matrix *= Mat4::from_rotation_z((-swing3 * 20.0).to_radians());
 
+    matrix *= Mat4::from_translation(Vec3::new(-1.0, 3.6, 3.5));
     matrix *= Mat4::from_rotation_z(120.0_f32.to_radians());
     matrix *= Mat4::from_rotation_x((180.0_f32 + 20.0_f32).to_radians());
     matrix *= Mat4::from_rotation_y((-90.0_f32 - 45.0_f32).to_radians());
-    matrix *= Mat4::from_translation(Vec3::new(0.28, -0.16, -0.02));
-    matrix *= Mat4::from_scale(Vec3::new(0.18, 0.32, 0.18));
+    matrix *= Mat4::from_translation(Vec3::new(5.6, 0.0, 0.0));
 
     transform_from_opengl_sequence(matrix)
 }
 
-fn first_person_held_item_transform(attack_anim: f32, equip_height: f32) -> Transform {
+fn first_person_map_transform(
+    attack_anim: f32,
+    equip_height: f32,
+    pitch_degrees: f32,
+) -> Transform {
+    let d = 0.8_f32;
+    let swing = attack_anim.clamp(0.0, 1.0);
+    let swing_sqrt = swing.sqrt();
+    let swing1 = (swing * std::f32::consts::PI).sin();
+    let swing2 = (swing_sqrt * std::f32::consts::PI).sin();
+    let swing3 = ((swing * swing) * std::f32::consts::PI).sin();
+
+    let mut tilt = 1.0 - pitch_degrees / 45.0 + 0.1;
+    tilt = tilt.clamp(0.0, 1.0);
+    tilt = -(tilt * std::f32::consts::PI).cos() * 0.5 + 0.5;
+
+    let mut matrix = Mat4::IDENTITY;
+    matrix *= Mat4::from_translation(Vec3::new(
+        -swing2 * 0.4,
+        (swing_sqrt * std::f32::consts::PI * 2.0).sin() * 0.2,
+        -swing1 * 0.2,
+    ));
+    matrix *= Mat4::from_translation(Vec3::new(
+        0.0,
+        -(1.0 - equip_height) * 1.2 - tilt * 0.5 + 0.04,
+        -0.9 * d,
+    ));
+    matrix *= Mat4::from_rotation_y(90.0_f32.to_radians());
+    matrix *= Mat4::from_rotation_z((tilt * -85.0).to_radians());
+    matrix *= Mat4::from_rotation_y((-swing3 * 20.0).to_radians());
+    matrix *= Mat4::from_rotation_z((-swing2 * 20.0).to_radians());
+    matrix *= Mat4::from_rotation_x((-swing2 * 80.0).to_radians());
+    matrix *= Mat4::from_scale(Vec3::splat(0.38));
+    matrix *= Mat4::from_rotation_y(90.0_f32.to_radians());
+    matrix *= Mat4::from_rotation_z(180.0_f32.to_radians());
+    matrix *= Mat4::from_translation(Vec3::new(-1.0, -1.0, 0.0));
+
+    transform_from_opengl_sequence(matrix)
+}
+
+fn first_person_held_item_transform(
+    attack_anim: f32,
+    equip_height: f32,
+    use_animation: HeldItemUseAnimation,
+    use_ticks: f32,
+) -> Transform {
     let d = 0.8_f32;
     let swing = attack_anim
         .clamp(0.0, 1.0)
@@ -6800,11 +8701,30 @@ fn first_person_held_item_transform(attack_anim: f32, equip_height: f32) -> Tran
     let swing3 = ((swing * swing) * std::f32::consts::PI).sin();
 
     let mut matrix = Mat4::IDENTITY;
-    matrix *= Mat4::from_translation(Vec3::new(
-        -swing2 * 0.4,
-        (swing_sqrt * std::f32::consts::PI * 2.0).sin() * 0.2,
-        -swing1 * 0.2,
-    ));
+
+    if use_animation == HeldItemUseAnimation::EatDrink {
+        let use_duration = use_animation_max_duration_ticks(use_animation);
+        let use_progress = (use_ticks / use_duration).clamp(0.0, 1.0);
+        let mut use_inverse = 1.0 - use_progress;
+        use_inverse = use_inverse.powi(9);
+        let use_swing = 1.0 - use_inverse;
+        let remaining_ticks = (use_duration - use_ticks).max(0.0);
+        let eat_shake = ((remaining_ticks / 4.0) * std::f32::consts::PI).cos().abs();
+        let eat_chomp = if use_progress > 0.2 { 1.0 } else { 0.0 };
+
+        matrix *= Mat4::from_translation(Vec3::new(0.0, eat_shake * 0.1 * eat_chomp, 0.0));
+        matrix *= Mat4::from_translation(Vec3::new(use_swing * 0.6, -use_swing * 0.5, 0.0));
+        matrix *= Mat4::from_rotation_y((use_swing * 90.0).to_radians());
+        matrix *= Mat4::from_rotation_x((use_swing * 10.0).to_radians());
+        matrix *= Mat4::from_rotation_z((use_swing * 30.0).to_radians());
+    } else {
+        matrix *= Mat4::from_translation(Vec3::new(
+            -swing2 * 0.4,
+            (swing_sqrt * std::f32::consts::PI * 2.0).sin() * 0.2,
+            -swing1 * 0.2,
+        ));
+    }
+
     matrix *= Mat4::from_translation(Vec3::new(
         0.7 * d,
         -0.65 * d - (1.0 - equip_height) * 0.6,
@@ -6816,35 +8736,56 @@ fn first_person_held_item_transform(attack_anim: f32, equip_height: f32) -> Tran
     matrix *= Mat4::from_rotation_x((-swing2 * 80.0).to_radians());
     matrix *= Mat4::from_scale(Vec3::splat(0.4));
 
+    match use_animation {
+        HeldItemUseAnimation::Block => {
+            matrix *= Mat4::from_translation(Vec3::new(-0.5, 0.2, 0.0));
+            matrix *= Mat4::from_rotation_y(30.0_f32.to_radians());
+            matrix *= Mat4::from_rotation_x((-80.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_y(60.0_f32.to_radians());
+        }
+        HeldItemUseAnimation::Bow => {
+            matrix *= Mat4::from_rotation_z((-18.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_y((-12.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_x((-8.0_f32).to_radians());
+            matrix *= Mat4::from_translation(Vec3::new(-0.9, 0.2, 0.0));
+
+            let mut draw = use_ticks / BOW_DRAW_DURATION_TICKS;
+            draw = ((draw * draw) + draw * 2.0) / 3.0;
+            draw = draw.clamp(0.0, 1.0);
+
+            if draw > 0.1 {
+                matrix *= Mat4::from_translation(Vec3::new(
+                    0.0,
+                    ((use_ticks - 0.1) * 1.3).sin() * 0.01 * (draw - 0.1),
+                    0.0,
+                ));
+            }
+
+            matrix *= Mat4::from_translation(Vec3::new(0.0, 0.0, draw * 0.1));
+            matrix *= Mat4::from_rotation_z((-45.0_f32 - 290.0_f32).to_radians());
+            matrix *= Mat4::from_rotation_y((-50.0_f32).to_radians());
+            matrix *= Mat4::from_translation(Vec3::new(0.0, 0.5, 0.0));
+            matrix *= Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + draw * 0.2));
+            matrix *= Mat4::from_translation(Vec3::new(0.0, -0.5, 0.0));
+            matrix *= Mat4::from_rotation_y(50.0_f32.to_radians());
+            matrix *= Mat4::from_rotation_z((45.0_f32 + 290.0_f32).to_radians());
+        }
+        _ => {}
+    }
+
     transform_from_opengl_sequence(matrix)
 }
 
-fn first_person_held_icon_item_transform(attack_anim: f32, equip_height: f32) -> Transform {
-    let d = 0.8_f32;
-    let swing = attack_anim
-        .clamp(0.0, 1.0)
-        .powf(ITEM_IN_HAND_SWING_POW_FACTOR);
-    let swing_sqrt = swing.sqrt();
-    let swing1 = (swing * std::f32::consts::PI).sin();
-    let swing2 = (swing_sqrt * std::f32::consts::PI).sin();
-    let swing3 = ((swing * swing) * std::f32::consts::PI).sin();
-
-    let mut matrix = Mat4::IDENTITY;
-    matrix *= Mat4::from_translation(Vec3::new(
-        -swing2 * 0.4,
-        (swing_sqrt * std::f32::consts::PI * 2.0).sin() * 0.2,
-        -swing1 * 0.2,
-    ));
-    matrix *= Mat4::from_translation(Vec3::new(
-        0.7 * d,
-        -0.65 * d - (1.0 - equip_height) * 0.6,
-        -0.9 * d,
-    ));
-    matrix *= Mat4::from_rotation_y(45.0_f32.to_radians());
-    matrix *= Mat4::from_rotation_y((-swing3 * 20.0).to_radians());
-    matrix *= Mat4::from_rotation_z((-swing2 * 20.0).to_radians());
-    matrix *= Mat4::from_rotation_x((-swing2 * 80.0).to_radians());
-    matrix *= Mat4::from_scale(Vec3::splat(0.4));
+fn first_person_held_icon_item_transform(
+    attack_anim: f32,
+    equip_height: f32,
+    use_animation: HeldItemUseAnimation,
+    use_ticks: f32,
+) -> Transform {
+    let base =
+        first_person_held_item_transform(attack_anim, equip_height, use_animation, use_ticks);
+    let mut matrix =
+        Mat4::from_scale_rotation_translation(base.scale, base.rotation, base.translation);
 
     matrix *= Mat4::from_translation(Vec3::new(0.0, -0.3, 0.0));
     matrix *= Mat4::from_scale(Vec3::splat(1.5));
@@ -6862,6 +8803,25 @@ fn transform_from_opengl_sequence(matrix: Mat4) -> Transform {
         rotation,
         scale,
     }
+}
+
+fn apply_first_person_wobble(
+    transform: &mut Transform,
+    wobble_pitch_degrees: f32,
+    wobble_yaw_degrees: f32,
+) {
+    let wobble = Mat4::from_rotation_x(wobble_pitch_degrees.to_radians())
+        * Mat4::from_rotation_y(wobble_yaw_degrees.to_radians());
+    let item = Mat4::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation,
+        transform.translation,
+    );
+    let combined = wobble * item;
+    let (scale, rotation, translation) = combined.to_scale_rotation_translation();
+    transform.translation = translation;
+    transform.rotation = rotation;
+    transform.scale = scale;
 }
 
 fn ui_item_atlas_uv(tile_x: u8, tile_y: u8) -> [[f32; 2]; 4] {
@@ -6958,89 +8918,95 @@ fn build_cloud_mesh(u_offset: f32, v_offset: f32) -> Mesh {
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
 
-    let min_tile = -CLOUD_TILE_REPEAT_RADIUS;
-    let max_tile = CLOUD_TILE_REPEAT_RADIUS - 1;
-    for tile_x in min_tile..=max_tile {
-        for tile_z in min_tile..=max_tile {
-            let x0 = tile_x as f32 * CLOUD_TILE_SIZE;
-            let x1 = x0 + CLOUD_TILE_SIZE;
-            let z0 = tile_z as f32 * CLOUD_TILE_SIZE;
-            let z1 = z0 + CLOUD_TILE_SIZE;
+    let min_section = -CLOUD_ADVANCED_SECTION_RADIUS + 1;
+    let max_section = CLOUD_ADVANCED_SECTION_RADIUS;
+    for section_x in min_section..=max_section {
+        for section_z in min_section..=max_section {
+            for texel_local_x in 0..CLOUD_ADVANCED_TEXELS_PER_SECTION {
+                for texel_local_z in 0..CLOUD_ADVANCED_TEXELS_PER_SECTION {
+                    let texel_x = section_x * CLOUD_ADVANCED_TEXELS_PER_SECTION + texel_local_x;
+                    let texel_z = section_z * CLOUD_ADVANCED_TEXELS_PER_SECTION + texel_local_z;
 
-            let y0 = 0.0;
-            let y1 = CLOUD_LAYER_THICKNESS;
+                    let x0 = texel_x as f32 * CLOUD_ADVANCED_TEXEL_WORLD_SIZE;
+                    let x1 = x0 + CLOUD_ADVANCED_TEXEL_WORLD_SIZE;
+                    let z0 = texel_z as f32 * CLOUD_ADVANCED_TEXEL_WORLD_SIZE;
+                    let z1 = z0 + CLOUD_ADVANCED_TEXEL_WORLD_SIZE;
+                    let y0 = 0.0;
+                    let y1 = CLOUD_LAYER_THICKNESS;
 
-            push_cloud_quad(
-                &mut positions,
-                &mut normals,
-                &mut uvs,
-                &mut indices,
-                [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
-                [0.0, 1.0, 0.0],
-                u_offset,
-                v_offset,
-            );
-            push_cloud_quad(
-                &mut positions,
-                &mut normals,
-                &mut uvs,
-                &mut indices,
-                [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
-                [0.0, -1.0, 0.0],
-                u_offset,
-                v_offset,
-            );
-
-            if tile_x == min_tile {
-                push_cloud_quad(
-                    &mut positions,
-                    &mut normals,
-                    &mut uvs,
-                    &mut indices,
-                    [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]],
-                    [-1.0, 0.0, 0.0],
-                    u_offset,
-                    v_offset,
-                );
-            }
-
-            if tile_x == max_tile {
-                push_cloud_quad(
-                    &mut positions,
-                    &mut normals,
-                    &mut uvs,
-                    &mut indices,
-                    [[x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0]],
-                    [1.0, 0.0, 0.0],
-                    u_offset,
-                    v_offset,
-                );
-            }
-
-            if tile_z == min_tile {
-                push_cloud_quad(
-                    &mut positions,
-                    &mut normals,
-                    &mut uvs,
-                    &mut indices,
-                    [[x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z0]],
-                    [0.0, 0.0, -1.0],
-                    u_offset,
-                    v_offset,
-                );
-            }
-
-            if tile_z == max_tile {
-                push_cloud_quad(
-                    &mut positions,
-                    &mut normals,
-                    &mut uvs,
-                    &mut indices,
-                    [[x0, y0, z1], [x0, y1, z1], [x1, y1, z1], [x1, y0, z1]],
-                    [0.0, 0.0, 1.0],
-                    u_offset,
-                    v_offset,
-                );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
+                        [0.0, 1.0, 0.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+                        [0.0, -1.0, 0.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0]],
+                        [-1.0, 0.0, 0.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+                        [1.0, 0.0, 0.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [x1, y0, z0]],
+                        [0.0, 0.0, -1.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                    push_cloud_quad(
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut indices,
+                        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+                        [0.0, 0.0, 1.0],
+                        texel_x,
+                        texel_z,
+                        u_offset,
+                        v_offset,
+                    );
+                }
             }
         }
     }
@@ -7063,18 +9029,19 @@ fn push_cloud_quad(
     indices: &mut Vec<u32>,
     corners: [[f32; 3]; 4],
     normal: [f32; 3],
+    texel_x: i32,
+    texel_z: i32,
     u_offset: f32,
     v_offset: f32,
 ) {
     let base_index = u32::try_from(positions.len()).unwrap_or(u32::MAX - 4);
+    let u = (texel_x as f32 + 0.5) * CLOUD_TEXEL_UV_SCALE + u_offset;
+    let v = (texel_z as f32 + 0.5) * CLOUD_TEXEL_UV_SCALE + v_offset;
 
     for corner in corners {
         positions.push(corner);
         normals.push(normal);
-        uvs.push([
-            corner[0] * CLOUD_UV_SCALE + u_offset,
-            corner[2] * CLOUD_UV_SCALE + v_offset,
-        ]);
+        uvs.push([u, v]);
     }
 
     indices.extend_from_slice(&[
@@ -7098,11 +9065,478 @@ fn world_vec3_to_bevy(value: lce_rust::world::Vec3) -> Vec3 {
     Vec3::new(value.x, value.y, value.z)
 }
 
+fn is_sword_item(item_id: u16) -> bool {
+    SWORD_ITEM_IDS.contains(&item_id)
+}
+
+fn is_hand_equipped_item(item_id: u16) -> bool {
+    SWORD_ITEM_IDS.contains(&item_id)
+        || SHOVEL_ITEM_IDS.contains(&item_id)
+        || PICKAXE_ITEM_IDS.contains(&item_id)
+        || AXE_ITEM_IDS.contains(&item_id)
+        || HOE_ITEM_IDS.contains(&item_id)
+        || HAND_EQUIPPED_DIRECT_ITEM_IDS.contains(&item_id)
+}
+
+fn is_mirrored_art_item(item_id: u16) -> bool {
+    MIRRORED_ART_ITEM_IDS.contains(&item_id)
+}
+
+fn is_eat_item(item_id: u16) -> bool {
+    EAT_ITEM_IDS.contains(&item_id)
+}
+
+fn is_drink_item(item_id: u16) -> bool {
+    DRINK_ITEM_IDS.contains(&item_id)
+}
+
+fn held_item_use_animation_for_item(item_id: u16) -> HeldItemUseAnimation {
+    if is_sword_item(item_id) {
+        HeldItemUseAnimation::Block
+    } else if item_id == BOW_ITEM_ID {
+        HeldItemUseAnimation::Bow
+    } else if is_eat_item(item_id) || is_drink_item(item_id) {
+        HeldItemUseAnimation::EatDrink
+    } else {
+        HeldItemUseAnimation::None
+    }
+}
+
+fn use_animation_max_duration_ticks(use_animation: HeldItemUseAnimation) -> f32 {
+    match use_animation {
+        HeldItemUseAnimation::EatDrink => EAT_DRINK_USE_DURATION_TICKS,
+        HeldItemUseAnimation::Block | HeldItemUseAnimation::Bow => {
+            MAX_CONTINUOUS_USE_DURATION_TICKS
+        }
+        HeldItemUseAnimation::None => 0.0,
+    }
+}
+
+fn is_pickaxe_item(item_id: u16) -> bool {
+    PICKAXE_ITEM_IDS.contains(&item_id)
+}
+
+fn block_destroy_progress_per_tick(block_id: u16, selected_stack: Option<ItemStack>) -> f32 {
+    if block_id == 0 || block_id == 7 {
+        return 0.0;
+    }
+
+    if !is_solid_block_for_player_collision(block_id) {
+        return 1.0;
+    }
+
+    let mut progress: f32 = if block_id == 49 {
+        0.01
+    } else if matches!(
+        block_id,
+        1 | 4 | 14 | 15 | 16 | 21 | 41 | 42 | 56 | 57 | 73 | 74 | 98 | 129 | 133
+    ) {
+        0.05
+    } else {
+        0.10
+    };
+
+    if let Some(stack) = selected_stack
+        && is_pickaxe_item(stack.item_id)
+        && matches!(
+            block_id,
+            1 | 4 | 14 | 15 | 16 | 21 | 41 | 42 | 49 | 56 | 57 | 73 | 74 | 98 | 129 | 133
+        )
+    {
+        let tool_multiplier = match stack.item_id {
+            270 => 1.4,
+            274 => 2.2,
+            257 => 3.0,
+            278 => 3.6,
+            285 => 6.0,
+            _ => 1.0,
+        };
+        progress *= tool_multiplier;
+    }
+
+    progress.min(1.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlacementFace {
+    Down,
+    Up,
+    North,
+    South,
+    West,
+    East,
+}
+
+fn placement_face_for_target(
+    solid_hit: Option<BlockRaycastHit>,
+    placement_target: BlockPos,
+) -> Option<PlacementFace> {
+    let hit = solid_hit?;
+    if hit.adjacent_air_block != placement_target {
+        return None;
+    }
+
+    let dx = placement_target.x - hit.block.x;
+    let dy = placement_target.y - hit.block.y;
+    let dz = placement_target.z - hit.block.z;
+
+    match (dx, dy, dz) {
+        (0, -1, 0) => Some(PlacementFace::Down),
+        (0, 1, 0) => Some(PlacementFace::Up),
+        (0, 0, -1) => Some(PlacementFace::North),
+        (0, 0, 1) => Some(PlacementFace::South),
+        (-1, 0, 0) => Some(PlacementFace::West),
+        (1, 0, 0) => Some(PlacementFace::East),
+        _ => None,
+    }
+}
+
+fn block_placement_data(
+    world: &BlockWorld,
+    block_id: u16,
+    placement_target: BlockPos,
+    placement_face: Option<PlacementFace>,
+    player_position: lce_rust::world::Vec3,
+    player_yaw_radians: f32,
+) -> Option<u8> {
+    match block_id {
+        50 | REDSTONE_TORCH_OFF_BLOCK_ID | REDSTONE_TORCH_ON_BLOCK_ID => Some(
+            torch_placement_data(world, placement_target, placement_face),
+        ),
+        LEVER_BLOCK_ID => {
+            lever_placement_data(world, placement_target, placement_face, player_yaw_radians)
+        }
+        29 | 33 => Some(piston_placement_facing(
+            placement_target,
+            player_position,
+            player_yaw_radians,
+        )),
+        _ => None,
+    }
+}
+
+fn torch_placement_data(
+    world: &BlockWorld,
+    placement_target: BlockPos,
+    placement_face: Option<PlacementFace>,
+) -> u8 {
+    let mut dir = 0_u8;
+
+    if let Some(face) = placement_face {
+        if face == PlacementFace::Up
+            && is_torch_connection_surface(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y - 1,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = 5;
+        }
+        if face == PlacementFace::North
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y,
+                    placement_target.z + 1,
+                ),
+            )
+        {
+            dir = 4;
+        }
+        if face == PlacementFace::South
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y,
+                    placement_target.z - 1,
+                ),
+            )
+        {
+            dir = 3;
+        }
+        if face == PlacementFace::West
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x + 1,
+                    placement_target.y,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = 2;
+        }
+        if face == PlacementFace::East
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x - 1,
+                    placement_target.y,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = 1;
+        }
+    }
+
+    if dir == 0 {
+        if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x - 1,
+                placement_target.y,
+                placement_target.z,
+            ),
+        ) {
+            dir = 1;
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x + 1,
+                placement_target.y,
+                placement_target.z,
+            ),
+        ) {
+            dir = 2;
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y,
+                placement_target.z - 1,
+            ),
+        ) {
+            dir = 3;
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y,
+                placement_target.z + 1,
+            ),
+        ) {
+            dir = 4;
+        } else if is_torch_connection_surface(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y - 1,
+                placement_target.z,
+            ),
+        ) {
+            dir = 5;
+        }
+    }
+
+    dir
+}
+
+fn lever_placement_data(
+    world: &BlockWorld,
+    placement_target: BlockPos,
+    placement_face: Option<PlacementFace>,
+    player_yaw_radians: f32,
+) -> Option<u8> {
+    let mut dir = None;
+
+    if let Some(face) = placement_face {
+        if face == PlacementFace::Down
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y + 1,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = Some(0_i32);
+        }
+        if face == PlacementFace::Up
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y - 1,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = Some(5_i32);
+        }
+        if face == PlacementFace::North
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y,
+                    placement_target.z + 1,
+                ),
+            )
+        {
+            dir = Some(4_i32);
+        }
+        if face == PlacementFace::South
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x,
+                    placement_target.y,
+                    placement_target.z - 1,
+                ),
+            )
+        {
+            dir = Some(3_i32);
+        }
+        if face == PlacementFace::West
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x + 1,
+                    placement_target.y,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = Some(2_i32);
+        }
+        if face == PlacementFace::East
+            && is_support_solid(
+                world,
+                BlockPos::new(
+                    placement_target.x - 1,
+                    placement_target.y,
+                    placement_target.z,
+                ),
+            )
+        {
+            dir = Some(1_i32);
+        }
+    }
+
+    if dir.is_none() {
+        if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x - 1,
+                placement_target.y,
+                placement_target.z,
+            ),
+        ) {
+            dir = Some(1);
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x + 1,
+                placement_target.y,
+                placement_target.z,
+            ),
+        ) {
+            dir = Some(2);
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y,
+                placement_target.z - 1,
+            ),
+        ) {
+            dir = Some(3);
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y,
+                placement_target.z + 1,
+            ),
+        ) {
+            dir = Some(4);
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y - 1,
+                placement_target.z,
+            ),
+        ) {
+            dir = Some(5);
+        } else if is_support_solid(
+            world,
+            BlockPos::new(
+                placement_target.x,
+                placement_target.y + 1,
+                placement_target.z,
+            ),
+        ) {
+            dir = Some(0);
+        }
+    }
+
+    let mut dir = dir?;
+    let yaw_even =
+        (((player_yaw_radians.to_degrees() * 4.0 / 360.0) + 0.5).floor() as i32 & 1) == 0;
+    if dir == 5 {
+        dir = if yaw_even { 5 } else { 6 };
+    } else if dir == 0 {
+        dir = if yaw_even { 7 } else { 0 };
+    }
+
+    Some(dir as u8)
+}
+
+fn piston_placement_facing(
+    placement_target: BlockPos,
+    player_position: lce_rust::world::Vec3,
+    player_yaw_radians: f32,
+) -> u8 {
+    if (player_position.x - placement_target.x as f32).abs() < 2.0
+        && (player_position.z - placement_target.z as f32).abs() < 2.0
+    {
+        let player_y = player_position.y + 0.2;
+        if player_y - placement_target.y as f32 > 2.0 {
+            return 1;
+        }
+        if placement_target.y as f32 - player_y > 0.0 {
+            return 0;
+        }
+    }
+
+    let i = ((player_yaw_radians.to_degrees() * 4.0 / 360.0) + 0.5).floor() as i32 & 0x3;
+    match i {
+        0 => 2,
+        1 => 5,
+        2 => 3,
+        _ => 4,
+    }
+}
+
+fn is_torch_connection_surface(world: &BlockWorld, block: BlockPos) -> bool {
+    let block_id = world.block_id(block);
+    is_support_solid(world, block)
+        || block_id == FENCE_BLOCK_ID
+        || block_id == NETHER_FENCE_BLOCK_ID
+        || block_id == GLASS_BLOCK_ID
+        || block_id == COBBLE_WALL_BLOCK_ID
+}
+
+fn is_support_solid(world: &BlockWorld, block: BlockPos) -> bool {
+    is_solid_block_for_player_collision(world.block_id(block))
+}
+
 fn default_present_mode() -> bevy::window::PresentMode {
     if let Ok(value) = std::env::var("LCE_VSYNC") {
         let normalized = value.trim().to_ascii_lowercase();
         if normalized == "0" || normalized == "false" || normalized == "off" {
             return bevy::window::PresentMode::AutoNoVsync;
+        }
+        if normalized == "1" || normalized == "true" || normalized == "on" {
+            return bevy::window::PresentMode::AutoVsync;
         }
     }
 

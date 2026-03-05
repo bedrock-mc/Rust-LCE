@@ -21,6 +21,7 @@ fn forward_motion_stops_when_hitting_solid_block() {
                 strafe: 0.0,
                 forward: 1.0,
                 jump: false,
+                sneak: false,
             },
             |block| block.y <= TEST_FLOOR_Y || solid_blocks.contains(&block),
         );
@@ -46,6 +47,7 @@ fn jump_respects_low_ceiling_collision() {
                 strafe: 0.0,
                 forward: 0.0,
                 jump: tick == 0,
+                sneak: false,
             },
             |block| block.y <= TEST_FLOOR_Y || solid_blocks.contains(&block),
         );
@@ -70,6 +72,7 @@ fn fluids_are_non_solid_for_player_collision_probe() {
                 strafe: 0.0,
                 forward: 1.0,
                 jump: false,
+                sneak: false,
             },
             |block| {
                 block.y <= TEST_FLOOR_Y
