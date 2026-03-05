@@ -1,1 +1,1 @@
-Vibe coded rust port of Minecraft LCE
+Professionally vibe coded rust port of Minecraft LCE
