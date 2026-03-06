@@ -1,12 +1,12 @@
 use lce_rust::client::creative_ui::{
-    CREATIVE_SELECTOR_SLOTS, CREATIVE_TABS, CreativeInventoryTab, creative_next_dynamic_group,
+    CREATIVE_SELECTOR_COLUMNS, CREATIVE_SELECTOR_ROWS, CREATIVE_SELECTOR_SLOTS, CREATIVE_TABS,
+    CreativeInventoryTab, creative_next_dynamic_group,
     creative_selector_entries_page_for_dynamic_group, creative_selector_items_page,
-    creative_selector_items_page_for_dynamic_group, creative_tab_dynamic_group_count,
-    creative_tab_entries_for_dynamic_group, creative_tab_icon_item_id, creative_tab_items,
-    creative_tab_items_for_dynamic_group, creative_tab_page_count,
-    creative_tab_page_count_for_dynamic_group, creative_tab_title, place_creative_entry_in_hotbar,
-    place_creative_item_in_hotbar, target_hotbar_slot_for_creative_entry,
-    target_hotbar_slot_for_creative_item,
+    creative_tab_dynamic_group_count, creative_tab_entries_for_dynamic_group,
+    creative_tab_icon_item_id, creative_tab_items, creative_tab_items_for_dynamic_group,
+    creative_tab_page_count, creative_tab_page_count_for_dynamic_group, creative_tab_title,
+    place_creative_entry_in_hotbar, place_creative_item_in_hotbar,
+    target_hotbar_slot_for_creative_entry, target_hotbar_slot_for_creative_item,
 };
 use lce_rust::world::{HOTBAR_SLOTS, ItemStack, PlayerInventory};
 
@@ -22,6 +22,10 @@ fn creative_tabs_follow_legacy_order_and_titles() {
     assert_eq!(
         creative_tab_title(CreativeInventoryTab::RedstoneAndTransport),
         "Redstone + Transport"
+    );
+    assert_eq!(
+        creative_tab_title(CreativeInventoryTab::Decorations),
+        "Decoration"
     );
     assert_eq!(
         creative_tab_title(CreativeInventoryTab::ToolsWeaponsArmor),
@@ -54,30 +58,43 @@ fn redstone_transport_tab_matches_legacy_group_order() {
 }
 
 #[test]
-fn brewing_dynamic_group_scaffold_matches_legacy_group_count_and_order() {
+fn brewing_tab_uses_legacy_static_group_paging_model() {
     assert_eq!(
         creative_tab_dynamic_group_count(CreativeInventoryTab::Brewing),
-        5
+        0
     );
     assert_eq!(
         creative_tab_dynamic_group_count(CreativeInventoryTab::Food),
         0
     );
 
-    let brewing_base = creative_tab_items_for_dynamic_group(CreativeInventoryTab::Brewing, 0);
-    assert_eq!(brewing_base[0], 384);
-    assert!(brewing_base.iter().any(|item_id| *item_id == 370));
-    assert!(brewing_base.iter().any(|item_id| *item_id == 373));
+    let brewing_base = creative_tab_items_for_dynamic_group(CreativeInventoryTab::Brewing, 4);
+    assert_eq!(
+        &brewing_base[..8],
+        &[384, 370, 376, 377, 378, 382, 374, 373]
+    );
 
-    let level2_extended = creative_tab_items_for_dynamic_group(CreativeInventoryTab::Brewing, 1);
-    assert_eq!(level2_extended, &[373]);
+    let brewing_entries = creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Brewing, 0);
+    assert!(brewing_entries.len() > CREATIVE_SELECTOR_SLOTS);
+    assert_eq!(
+        brewing_entries[0].item_id, 384,
+        "xp bottle should be first brewing entry"
+    );
+    assert_eq!(
+        brewing_entries[7].aux, 0,
+        "water bottle should end brewing base group"
+    );
+    assert_eq!(
+        brewing_entries[8].aux, 0x2061,
+        "next entry should begin level2+extended potion group"
+    );
 }
 
 #[test]
-fn brewing_dynamic_group_wraps_and_drives_selector_page() {
+fn brewing_tab_row_scrolls_without_dynamic_group_cycle() {
     assert_eq!(
         creative_next_dynamic_group(CreativeInventoryTab::Brewing, 0),
-        1
+        0
     );
     assert_eq!(
         creative_next_dynamic_group(CreativeInventoryTab::Brewing, 4),
@@ -88,24 +105,25 @@ fn brewing_dynamic_group_wraps_and_drives_selector_page() {
         0
     );
 
+    let brewing_entries = creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Brewing, 0);
+    let expected_brewing_pages = brewing_entries
+        .len()
+        .div_ceil(CREATIVE_SELECTOR_COLUMNS)
+        .saturating_sub(CREATIVE_SELECTOR_ROWS)
+        .saturating_add(1);
+
     assert_eq!(
         creative_tab_page_count_for_dynamic_group(CreativeInventoryTab::Brewing, 0),
-        1
-    );
-    assert_eq!(
-        creative_tab_page_count_for_dynamic_group(CreativeInventoryTab::Brewing, 3),
-        1
+        expected_brewing_pages
     );
 
-    let potion_selector =
-        creative_selector_items_page_for_dynamic_group(CreativeInventoryTab::Brewing, 3, 0);
-    assert_eq!(potion_selector[0], Some(373));
-    assert!(
-        potion_selector
-            .iter()
-            .skip(1)
-            .any(|entry| *entry == Some(373))
-    );
+    let page_0 =
+        creative_selector_entries_page_for_dynamic_group(CreativeInventoryTab::Brewing, 0, 0);
+    let page_1 =
+        creative_selector_entries_page_for_dynamic_group(CreativeInventoryTab::Brewing, 0, 1);
+
+    assert_eq!(page_0[0].map(|entry| entry.item_id), Some(384));
+    assert_eq!(page_0[CREATIVE_SELECTOR_COLUMNS], page_1[0]);
 }
 
 #[test]
@@ -129,11 +147,51 @@ fn creative_selector_page_surfaces_known_placeable_entries() {
 #[test]
 fn creative_page_count_defaults_to_one_for_empty_tabs() {
     assert!(creative_tab_items(CreativeInventoryTab::BuildingBlocks).len() > 50);
+    let structure_entries =
+        creative_tab_entries_for_dynamic_group(CreativeInventoryTab::BuildingBlocks, 0).len();
+    let expected_structure_pages = structure_entries
+        .div_ceil(CREATIVE_SELECTOR_COLUMNS)
+        .saturating_sub(CREATIVE_SELECTOR_ROWS)
+        .saturating_add(1);
+
     assert_eq!(
         creative_tab_page_count(CreativeInventoryTab::BuildingBlocks),
-        2
+        expected_structure_pages
     );
-    assert_eq!(creative_tab_page_count(CreativeInventoryTab::Brewing), 1);
+    assert!(creative_tab_page_count(CreativeInventoryTab::BuildingBlocks) > 1);
+
+    let brewing_entries =
+        creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Brewing, 0).len();
+    let expected_brewing_pages = brewing_entries
+        .div_ceil(CREATIVE_SELECTOR_COLUMNS)
+        .saturating_sub(CREATIVE_SELECTOR_ROWS)
+        .saturating_add(1);
+    assert_eq!(
+        creative_tab_page_count(CreativeInventoryTab::Brewing),
+        expected_brewing_pages
+    );
+}
+
+#[test]
+fn creative_selector_scrolls_by_one_row_per_page() {
+    let page_0 = creative_selector_entries_page_for_dynamic_group(
+        CreativeInventoryTab::BuildingBlocks,
+        0,
+        0,
+    );
+    let page_1 = creative_selector_entries_page_for_dynamic_group(
+        CreativeInventoryTab::BuildingBlocks,
+        0,
+        1,
+    );
+
+    assert_eq!(page_0[CREATIVE_SELECTOR_COLUMNS], page_1[0]);
+
+    let overlap_slots = CREATIVE_SELECTOR_SLOTS - CREATIVE_SELECTOR_COLUMNS;
+    assert_eq!(
+        page_0[CREATIVE_SELECTOR_SLOTS - 1],
+        page_1[overlap_slots - 1]
+    );
 }
 
 #[test]
@@ -238,6 +296,40 @@ fn building_blocks_aux_variants_follow_legacy_scaffold_order() {
         .map(|entry| entry.aux)
         .collect();
     assert_eq!(quartz_aux, vec![0, 1, 2]);
+
+    let coal_block_index = entries
+        .iter()
+        .position(|entry| entry.item_id == 173 && entry.aux == 0)
+        .expect("coal block should be present");
+    let gold_block_index = entries
+        .iter()
+        .position(|entry| entry.item_id == 41 && entry.aux == 0)
+        .expect("gold block should be present");
+    assert!(coal_block_index < gold_block_index);
+
+    let fence_index = entries
+        .iter()
+        .position(|entry| entry.item_id == 85 && entry.aux == 0)
+        .expect("oak fence should be present");
+    assert_eq!(entries[fence_index + 1].item_id, 113);
+    assert_eq!(entries[fence_index + 2].item_id, 101);
+    assert_eq!(entries[fence_index + 3].item_id, 139);
+
+    let hardened_clay_index = entries
+        .iter()
+        .position(|entry| entry.item_id == 172)
+        .expect("hardened clay should be present");
+    assert_eq!(entries[hardened_clay_index].aux, 0);
+
+    let stained_hardened_clay_aux: Vec<u16> = entries
+        .iter()
+        .filter(|entry| entry.item_id == 159)
+        .map(|entry| entry.aux)
+        .collect();
+    assert_eq!(
+        stained_hardened_clay_aux,
+        vec![14, 1, 4, 5, 3, 9, 11, 10, 2, 6, 0, 8, 7, 15, 13, 12]
+    );
 }
 
 #[test]
@@ -249,6 +341,11 @@ fn decoration_and_misc_aux_variants_follow_legacy_scaffold_order() {
         .iter()
         .position(|entry| entry.item_id == 35)
         .expect("wool should be present");
+    let hay_block_index = decoration_entries
+        .iter()
+        .position(|entry| entry.item_id == 170)
+        .expect("hay block should be present");
+    assert!(hay_block_index < wool_index);
     assert_eq!(decoration_entries[wool_index].aux, 14);
     assert_eq!(decoration_entries[wool_index + 1].aux, 1);
     assert_eq!(decoration_entries[wool_index + 2].aux, 4);
@@ -264,6 +361,16 @@ fn decoration_and_misc_aux_variants_follow_legacy_scaffold_order() {
     assert_eq!(building_entries[wall_index + 1].aux, 1);
 
     let misc_entries = creative_tab_entries_for_dynamic_group(CreativeInventoryTab::Misc, 0);
+
+    let beacon_index = misc_entries
+        .iter()
+        .position(|entry| entry.item_id == 138)
+        .expect("beacon should be present");
+    let end_portal_frame_index = misc_entries
+        .iter()
+        .position(|entry| entry.item_id == 120)
+        .expect("end portal frame should be present");
+    assert!(beacon_index < end_portal_frame_index);
 
     let spawn_egg_aux: Vec<u16> = misc_entries
         .iter()

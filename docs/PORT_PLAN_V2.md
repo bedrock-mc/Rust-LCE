@@ -91,12 +91,12 @@
 - M4.1 mouse-look and targeting polish is complete (including A/D inversion fix).
 - M4.2 chunk visualization path is complete (chunk-window streaming + dynamic chunk load/unload).
 - M4.3 original asset integration path is complete (terrain/gui/icons/click-audio staging + runtime wiring).
-- M4.5 gameplay UI parity completion pass is reopened by request (backend inventory/crafting/death systems already exist; client UI wiring is now being finished).
+- M4.5 gameplay UI parity completion pass is closed (backend inventory/crafting/death systems plus client UI wiring are now in place for the baseline parity target).
   - M4.5.1 Dynamic hotbar HUD bound to live inventory state is complete.
   - M4.5.2 Inventory screen + cursor handoff/capture flow is complete.
   - M4.5.3 Crafting UI wiring against existing recipe backend is complete.
   - M4.5.4 Health/death/respawn HUD + pause/menu baseline is complete.
-  - M4.5.5 Creative inventory UI parity baseline (in progress: tab-order + selector-page + hotbar-placement scaffold wired).
+  - M4.5.5 Creative inventory UI parity baseline is complete (tab/title/catalog order alignment, row-scroll page semantics, and brewing static-group model parity).
 - M3.2 crafting and item use baseline is complete (recipes + item-use consumption flow).
 - M3.3 combat/health/death-respawn baseline is complete.
 - WG.1 deterministic worldgen scaffolding baseline is complete (`PerlinNoise`/`SimplexNoise`, `BiomeSource`/`BiomeDecorator`, and level source shells).
@@ -119,10 +119,10 @@
 - GP.3.2b ore decorator parity follow-up is complete (`BiomeDecorator::decorateOres` attempt counts/depth distributions and ore coordinate-window semantics now match `Minecraft.World/BiomeDecorator.cpp`, including lapis average-depth sampling).
 - GP.3.2b nether/end decorator-source parity follow-up is complete (`HellRandomLevelSource` now emits biome-decorator outputs, and `TheEndLevelRandomLevelSource` now emits `TheEndBiomeDecorator` chunk-triggered spike/podium/dragon markers while preserving End ore-pass behavior).
 - GP.3.2b fluid simulation parity follow-up is complete (`LiquidTile` dynamic/static update flow is now ported with depth metadata, downhill/slope spread, decay, static-water reactivation, lava-water conversion, and block-change neighbor fluid scheduling).
-- GP.3.2b fluid visual/interaction parity follow-up is complete (fluid mesh top/side shaping and UV behavior now tracks `TileRenderer::tesselateWaterInWorld`/`getWaterHeight` semantics, interaction placement can replace fluid cells, and fluid rendering now uses a merged global transparent fluid pass to avoid chunk-edge transparency seams).
+- GP.3.2b fluid visual/interaction parity follow-up is complete (fluid mesh top/side shaping and UV behavior now tracks `TileRenderer::tesselateWaterInWorld`/`getWaterHeight` semantics, interaction placement can replace fluid cells, and render-layer routing now follows C++ layer intent so water is translucent layer `1` while lava remains in layer `0`).
 - GP.3.2c terrain rendering edge-case pass is complete (nearest atlas sampling + side-face UV orientation fix + UV inset bleed mitigation).
 - GP.3.2c grass-top shading follow-up is complete (top-face tint aligned to LCE colour-table grass common value `0x7cbd6b`).
 - M4.5 visual parity follow-up now includes a `LevelRenderer::renderClouds`-anchored baseline (legacy `environment/clouds.png` staging + camera-relative cloud layer drift).
-- Bevy client default chunk window is currently tuned to `CHUNK_LOAD_RADIUS=16` (override via `LCE_CHUNK_LOAD_RADIUS`), with an independent mesh staging cap via `LCE_CHUNK_MESH_RADIUS` (default `8`, temporary hard cap `10`) and a total per-frame mesh rebuild budget (`LCE_MAX_MESH_REBUILDS_PER_FRAME`, default `1`) to reduce streaming hitches/VRAM pressure while parity-debt work continues.
+- Bevy client default chunk window is currently tuned to `CHUNK_LOAD_RADIUS=12` (override via `LCE_CHUNK_LOAD_RADIUS`) with an independent mesh staging cap via `LCE_CHUNK_MESH_RADIUS` (default `8`, temporary hard cap `10`); streaming mesh rebuild selection now follows a nearest-first path with C++-anchored very-near burst handling (`GameRenderer.cpp` `MAX_DEFERRED_UPDATES` intent) instead of temporary env-gated rebuild budgets.
 - Runtime testing defaults currently include daytime boot alignment (`day_time=6000`) and creative-style double-tap jump flight toggle to speed parity verification passes.
-- Current active step: `GP.3` parity debt backlog closure (chunk mesh/update parity + save-flush stabilization resumed while `M4.5.5` remains open).
+- Current active step: `M5.1` UI/gameplay regression sweep + backlog triage.

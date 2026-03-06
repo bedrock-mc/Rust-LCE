@@ -2,8 +2,8 @@ use lce_rust::client::terrain_meshing::{
     BlockFace, atlas_tile_for_block_face, build_chunk_mesh_data, dirty_chunks_for_block,
 };
 use lce_rust::world::{
-    BlockPos, BlockWorld, ChunkPos, REDSTONE_WIRE_BLOCK_ID, REDSTONE_WIRE_POWERED_BLOCK_ID,
-    WATER_SOURCE_BLOCK_ID,
+    BlockPos, BlockWorld, ChunkPos, LAVA_SOURCE_BLOCK_ID, REDSTONE_WIRE_BLOCK_ID,
+    REDSTONE_WIRE_POWERED_BLOCK_ID, WATER_SOURCE_BLOCK_ID,
 };
 
 #[test]
@@ -164,6 +164,23 @@ fn flowing_water_mesh_has_lower_top_surface_height() {
 }
 
 #[test]
+fn water_is_layer_one_but_lava_stays_layer_zero() {
+    let mut water_world = BlockWorld::new();
+    water_world.place_block(BlockPos::new(0, 64, 0), WATER_SOURCE_BLOCK_ID);
+    let water_mesh =
+        build_chunk_mesh_data(&water_world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+    assert!(!water_mesh.face_render_layer.is_empty());
+    assert!(water_mesh.face_render_layer.iter().all(|layer| *layer == 1));
+
+    let mut lava_world = BlockWorld::new();
+    lava_world.place_block(BlockPos::new(0, 64, 0), LAVA_SOURCE_BLOCK_ID);
+    let lava_mesh =
+        build_chunk_mesh_data(&lava_world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+    assert!(!lava_mesh.face_render_layer.is_empty());
+    assert!(lava_mesh.face_render_layer.iter().all(|layer| *layer == 0));
+}
+
+#[test]
 fn redstone_wire_uses_redstone_tiles_instead_of_stone_fallback() {
     assert_eq!(
         atlas_tile_for_block_face(REDSTONE_WIRE_BLOCK_ID, BlockFace::Top),
@@ -242,6 +259,17 @@ fn redstone_wire_mesh_applies_lit_and_unlit_tints() {
     let lit_mesh =
         build_chunk_mesh_data(&lit_world, ChunkPos::new(0, 0)).expect("mesh should be generated");
     assert_eq!(lit_mesh.colors[0], [1.0, 50.0 / 255.0, 0.0, 1.0]);
+}
+
+#[test]
+fn redstone_wire_faces_stay_in_layer_zero() {
+    let mut world = BlockWorld::new();
+    world.place_block(BlockPos::new(0, 64, 0), REDSTONE_WIRE_BLOCK_ID);
+    let mesh =
+        build_chunk_mesh_data(&world, ChunkPos::new(0, 0)).expect("mesh should be generated");
+
+    assert!(!mesh.face_render_layer.is_empty());
+    assert!(mesh.face_render_layer.iter().all(|layer| *layer == 0));
 }
 
 #[test]

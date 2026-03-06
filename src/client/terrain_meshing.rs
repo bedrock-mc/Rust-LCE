@@ -36,7 +36,7 @@ pub struct TerrainMeshData {
     pub uvs: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
-    pub face_is_fluid: Vec<bool>,
+    pub face_render_layer: Vec<u8>,
 }
 
 pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<TerrainMeshData> {
@@ -79,12 +79,19 @@ pub fn build_chunk_mesh_data(world: &BlockWorld, chunk: ChunkPos) -> Option<Terr
                 tile_x,
                 tile_y,
                 FLAT_TILE_RENDER_OFFSET,
+                block_render_layer(block_id),
             );
             return;
         }
 
         if let Some((tile_x, tile_y)) = cross_plane_block_tile(block_id) {
-            append_cross_plane_block(&mut mesh, block_pos, tile_x, tile_y);
+            append_cross_plane_block(
+                &mut mesh,
+                block_pos,
+                tile_x,
+                tile_y,
+                block_render_layer(block_id),
+            );
             return;
         }
 
@@ -138,9 +145,16 @@ pub fn build_block_break_overlay_mesh_data(
             tile_x,
             tile_y,
             FLAT_TILE_RENDER_OFFSET,
+            block_render_layer(block_id),
         );
     } else if let Some((tile_x, tile_y)) = cross_plane_block_tile(block_id) {
-        append_cross_plane_block(&mut mesh, block_pos, tile_x, tile_y);
+        append_cross_plane_block(
+            &mut mesh,
+            block_pos,
+            tile_x,
+            tile_y,
+            block_render_layer(block_id),
+        );
     } else {
         for face in FACE_DEFS {
             append_face(&mut mesh, block_pos, block_id, face);
@@ -168,10 +182,7 @@ pub fn build_block_break_overlay_mesh_data(
         }
     }
 
-    mesh.face_is_fluid.resize(face_count, true);
-    for is_fluid_face in &mut mesh.face_is_fluid {
-        *is_fluid_face = true;
-    }
+    mesh.face_render_layer.resize(face_count, 1);
 
     Some(mesh)
 }
@@ -469,7 +480,7 @@ fn append_face_with_tile(
 
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(false);
+    mesh.face_render_layer.push(block_render_layer(block_id));
 }
 
 fn append_oriented_piston_block(
@@ -703,7 +714,8 @@ fn append_redstone_wire_quad(
 
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(true);
+    mesh.face_render_layer
+        .push(block_render_layer(REDSTONE_WIRE_BLOCK_ID));
 }
 
 fn atlas_uv_region(
@@ -753,7 +765,7 @@ fn append_torch(
         block_id,
         [x0, y0, z0, x1, y1, z1],
         [1.0, 1.0, 1.0, 1.0],
-        true,
+        block_render_layer(block_id),
     );
 }
 
@@ -780,7 +792,7 @@ fn append_lever(
         block_id,
         bounds,
         [1.0, 1.0, 1.0, 1.0],
-        true,
+        block_render_layer(block_id),
     );
 }
 
@@ -790,7 +802,7 @@ fn append_axis_aligned_box(
     block_id: u16,
     bounds: [f32; 6],
     color: [f32; 4],
-    transparent: bool,
+    render_layer: u8,
 ) {
     let [x0, y0, z0, x1, y1, z1] = bounds;
 
@@ -824,7 +836,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::Top).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
     append_box_face(
         mesh,
@@ -856,7 +868,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::Bottom).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
     append_box_face(
         mesh,
@@ -888,7 +900,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::North).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
     append_box_face(
         mesh,
@@ -920,7 +932,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::South).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
     append_box_face(
         mesh,
@@ -952,7 +964,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::West).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
     append_box_face(
         mesh,
@@ -984,7 +996,7 @@ fn append_axis_aligned_box(
             atlas_tile_for_block_face(block_id, BlockFace::East).1,
         ),
         color,
-        transparent,
+        render_layer,
     );
 }
 
@@ -994,7 +1006,7 @@ fn append_box_face(
     normal: [f32; 3],
     uv: [[f32; 2]; 4],
     color: [f32; 4],
-    transparent: bool,
+    render_layer: u8,
 ) {
     let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
     for index in 0..4 {
@@ -1005,7 +1017,7 @@ fn append_box_face(
     }
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(transparent);
+    mesh.face_render_layer.push(render_layer);
 }
 
 fn flat_top_block_tile(block_id: u16) -> Option<(u8, u8)> {
@@ -1048,6 +1060,7 @@ fn append_flat_tile(
     tile_x: u8,
     tile_y: u8,
     y: f32,
+    render_layer: u8,
 ) {
     let uv = atlas_uv(tile_x, tile_y);
     let world_y = block_pos.y as f32 + y;
@@ -1070,7 +1083,7 @@ fn append_flat_tile(
 
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(false);
+    mesh.face_render_layer.push(render_layer);
 }
 
 fn append_cross_plane_block(
@@ -1078,6 +1091,7 @@ fn append_cross_plane_block(
     block_pos: BlockPos,
     tile_x: u8,
     tile_y: u8,
+    render_layer: u8,
 ) {
     let uv = atlas_uv(tile_x, tile_y);
     let color = [1.0, 1.0, 1.0, 1.0];
@@ -1108,6 +1122,7 @@ fn append_cross_plane_block(
         ],
         uv,
         color,
+        render_layer,
     );
 
     append_cross_plane_quad(
@@ -1136,6 +1151,7 @@ fn append_cross_plane_block(
         ],
         uv,
         color,
+        render_layer,
     );
 }
 
@@ -1144,6 +1160,7 @@ fn append_cross_plane_quad(
     corners: [[f32; 3]; 4],
     uv: [[f32; 2]; 4],
     color: [f32; 4],
+    render_layer: u8,
 ) {
     let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 8);
 
@@ -1155,7 +1172,7 @@ fn append_cross_plane_quad(
     }
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(false);
+    mesh.face_render_layer.push(render_layer);
 
     let back_base = base + 4;
     for index in 0..4 {
@@ -1172,7 +1189,7 @@ fn append_cross_plane_quad(
         back_base + 2,
         back_base + 1,
     ]);
-    mesh.face_is_fluid.push(false);
+    mesh.face_render_layer.push(render_layer);
 }
 
 fn append_fluid_block(
@@ -1248,6 +1265,7 @@ fn append_fluid_block(
     }
 
     let color = fluid_vertex_tint(kind);
+    let render_layer = fluid_render_layer(kind);
 
     if render_up {
         h0 -= FLUID_FACE_OFFSET;
@@ -1273,6 +1291,7 @@ fn append_fluid_block(
             [0.0, 1.0, 0.0],
             top_uv,
             color,
+            render_layer,
         );
     }
 
@@ -1301,6 +1320,7 @@ fn append_fluid_block(
             [0.0, -1.0, 0.0],
             down_uv,
             color,
+            render_layer,
         );
     }
 
@@ -1330,6 +1350,7 @@ fn append_fluid_block(
             h0,
             h3,
             color,
+            render_layer,
         );
     }
 
@@ -1363,6 +1384,7 @@ fn append_fluid_block(
             h2,
             h1,
             color,
+            render_layer,
         );
     }
 
@@ -1392,6 +1414,7 @@ fn append_fluid_block(
             h1,
             h0,
             color,
+            render_layer,
         );
     }
 
@@ -1425,6 +1448,7 @@ fn append_fluid_block(
             h3,
             h2,
             color,
+            render_layer,
         );
     }
 }
@@ -1437,6 +1461,7 @@ fn append_fluid_side(
     h0: f32,
     h1: f32,
     color: [f32; 4],
+    render_layer: u8,
 ) {
     let (u0, v0, u1, v1) = fluid_flow_uv_rect(kind);
     let u_mid = u0 + (u1 - u0) * 0.5;
@@ -1446,7 +1471,7 @@ fn append_fluid_side(
         [u_mid, v0 + (v1 - v0) * 0.5],
         [u0, v0 + (v1 - v0) * 0.5],
     ];
-    append_quad(mesh, corners, normal, uv, color);
+    append_quad(mesh, corners, normal, uv, color, render_layer);
 }
 
 fn append_quad(
@@ -1455,6 +1480,7 @@ fn append_quad(
     normal: [f32; 3],
     uv: [[f32; 2]; 4],
     color: [f32; 4],
+    render_layer: u8,
 ) {
     let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX - 4);
     for index in 0..4 {
@@ -1466,7 +1492,22 @@ fn append_quad(
 
     mesh.indices
         .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    mesh.face_is_fluid.push(true);
+    mesh.face_render_layer.push(render_layer);
+}
+
+fn fluid_render_layer(kind: FluidKind) -> u8 {
+    match kind {
+        // `LiquidTile::getRenderLayer`: water is translucent layer 1, lava remains layer 0.
+        FluidKind::Water => 1,
+        FluidKind::Lava => 0,
+    }
+}
+
+fn block_render_layer(block_id: u16) -> u8 {
+    match block_id {
+        WATER_SOURCE_BLOCK_ID | WATER_FLOWING_BLOCK_ID | 79 | 90 | 95 | 132 | 160 => 1,
+        _ => 0,
+    }
 }
 
 fn should_render_fluid_face(

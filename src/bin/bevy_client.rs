@@ -35,9 +35,9 @@ use lce_rust::client::crafting_ui::{
 };
 use lce_rust::client::creative_ui::{
     CREATIVE_SELECTOR_COLUMNS, CREATIVE_SELECTOR_ROWS, CREATIVE_TABS, CreativeInventoryTab,
-    creative_next_dynamic_group, creative_selector_entries_page_for_dynamic_group,
-    creative_tab_dynamic_group_count, creative_tab_entry_page_count_for_dynamic_group,
-    creative_tab_icon_item_id, creative_tab_title, place_creative_entry_in_hotbar,
+    creative_selector_entries_page_for_dynamic_group,
+    creative_tab_entry_page_count_for_dynamic_group, creative_tab_icon_item_id, creative_tab_title,
+    place_creative_entry_in_hotbar,
 };
 use lce_rust::client::gameplay_ui::{
     allow_cursor_capture, allow_first_person_item_view, allow_first_person_view,
@@ -76,15 +76,16 @@ const CAMERA_EYE_HEIGHT: f32 = 1.62;
 const DEFAULT_FOV_DEGREES: f32 = 110.0;
 const LOOK_SENSITIVITY_RADIANS_PER_PIXEL: f32 = 0.003;
 const MAX_PITCH_RADIANS: f32 = 1.45;
-const DEFAULT_CHUNK_LOAD_RADIUS: i32 = 16;
+const DEFAULT_CHUNK_LOAD_RADIUS: i32 = 12;
 const DEFAULT_CHUNK_MESH_RADIUS: i32 = 8;
 const MAX_CHUNK_MESH_RADIUS: i32 = 10;
 const MAX_PENDING_CHUNK_REQUESTS: usize = 4;
 const MAX_CHUNK_REQUESTS_PER_FRAME: usize = 2;
 const MAX_GENERATED_CHUNKS_APPLIED_PER_FRAME: usize = 1;
 const MAX_VISIBLE_MESH_BACKFILL_PER_FRAME: usize = 1;
-const MAX_DEFERRED_MESH_REBUILDS_PER_FRAME: usize = 2;
-const MAX_MESH_REBUILDS_PER_FRAME: usize = 1;
+const VERY_NEAR_STREAMING_MESH_DISTANCE_SQ: i64 = 1;
+// Mirrors the legacy update-thread safety cap (`GameRenderer.cpp` `MAX_DEFERRED_UPDATES`).
+const MAX_VERY_NEAR_STREAMING_MESH_REBUILDS_PER_FRAME: usize = 10;
 const HOTBAR_GUI_SCALE: f32 = 2.0;
 const INVENTORY_GUI_SCALE: f32 = 3.0;
 const LEGACY_MENU_GUI_SCALE: f32 = 2.0;
@@ -512,7 +513,6 @@ impl InventoryDragState {
 struct CreativeInventoryState {
     tab: CreativeInventoryTab,
     tab_pages: [usize; CREATIVE_TABS.len()],
-    tab_dynamic_groups: [usize; CREATIVE_TABS.len()],
     show_player_inventory_tab: bool,
 }
 
@@ -531,12 +531,7 @@ impl CreativeInventoryState {
     }
 
     fn active_dynamic_group(&self) -> usize {
-        self.tab_dynamic_groups[self.active_tab_index()]
-    }
-
-    fn set_active_dynamic_group(&mut self, dynamic_group: usize) {
-        let tab_index = self.active_tab_index();
-        self.tab_dynamic_groups[tab_index] = dynamic_group;
+        0
     }
 }
 
@@ -545,7 +540,6 @@ impl Default for CreativeInventoryState {
         Self {
             tab: CreativeInventoryTab::BuildingBlocks,
             tab_pages: [0; CREATIVE_TABS.len()],
-            tab_dynamic_groups: [0; CREATIVE_TABS.len()],
             show_player_inventory_tab: false,
         }
     }
@@ -640,8 +634,6 @@ impl PerfDebugConfig {
 struct StreamingConfig {
     chunk_load_radius: i32,
     chunk_mesh_radius: i32,
-    deferred_mesh_rebuilds_per_frame: usize,
-    mesh_rebuilds_per_frame_budget: usize,
 }
 
 impl StreamingConfig {
@@ -654,23 +646,10 @@ impl StreamingConfig {
             DEFAULT_CHUNK_MESH_RADIUS.min(max_mesh_radius),
         )
         .clamp(1, max_mesh_radius);
-        let deferred_mesh_rebuilds_per_frame = usize::try_from(env_u64(
-            "LCE_DEFERRED_MESH_REBUILDS_PER_FRAME",
-            MAX_DEFERRED_MESH_REBUILDS_PER_FRAME as u64,
-        ))
-        .unwrap_or(MAX_DEFERRED_MESH_REBUILDS_PER_FRAME);
-        let mesh_rebuilds_per_frame_budget = usize::try_from(env_u64(
-            "LCE_MAX_MESH_REBUILDS_PER_FRAME",
-            MAX_MESH_REBUILDS_PER_FRAME as u64,
-        ))
-        .unwrap_or(MAX_MESH_REBUILDS_PER_FRAME)
-        .max(1);
 
         Self {
             chunk_load_radius,
             chunk_mesh_radius,
-            deferred_mesh_rebuilds_per_frame,
-            mesh_rebuilds_per_frame_budget,
         }
     }
 }
@@ -1205,12 +1184,8 @@ fn main() {
         streaming_config.chunk_mesh_radius
     );
     println!(
-        "Deferred neighbor mesh rebuilds per frame: {}",
-        streaming_config.deferred_mesh_rebuilds_per_frame
-    );
-    println!(
-        "Total mesh rebuild budget per frame: {}",
-        streaming_config.mesh_rebuilds_per_frame_budget
+        "Streaming mesh rebuild path: nearest-first with very-near burst cap {}",
+        MAX_VERY_NEAR_STREAMING_MESH_REBUILDS_PER_FRAME
     );
 
     if perf_debug_config.water_debug_enabled {
@@ -2553,14 +2528,7 @@ fn sync_chunk_window(
         .collect();
     sort_chunks_by_distance(&mut immediate_rebuild_chunks, player_chunk);
 
-    let mut remaining_mesh_budget = streaming_config.mesh_rebuilds_per_frame_budget;
-
     for chunk in immediate_rebuild_chunks {
-        if remaining_mesh_budget == 0 {
-            pending_mesh_rebuilds.0.insert(chunk);
-            continue;
-        }
-
         pending_mesh_rebuilds.0.remove(&chunk);
 
         let mesh_start = Instant::now();
@@ -2576,7 +2544,6 @@ fn sync_chunk_window(
         perf_stats.mesh += elapsed;
         perf_stats.meshes_rebuilt += 1;
         maybe_log_mesh_rebuild_spike(&perf_config, "stream_load_current", chunk, elapsed);
-        remaining_mesh_budget = remaining_mesh_budget.saturating_sub(1);
     }
 
     let mut deferred_rebuild_chunks: Vec<_> = pending_mesh_rebuilds
@@ -2586,12 +2553,13 @@ fn sync_chunk_window(
         .filter(|chunk| loaded_chunks.0.contains(chunk) && desired_mesh_chunks.contains(chunk))
         .collect();
     sort_chunks_by_distance(&mut deferred_rebuild_chunks, player_chunk);
+    let deferred_rebuild_limit =
+        deferred_streaming_mesh_rebuild_limit(&deferred_rebuild_chunks, player_chunk);
 
-    for chunk in deferred_rebuild_chunks.into_iter().take(
-        streaming_config
-            .deferred_mesh_rebuilds_per_frame
-            .min(remaining_mesh_budget),
-    ) {
+    for chunk in deferred_rebuild_chunks
+        .into_iter()
+        .take(deferred_rebuild_limit)
+    {
         pending_mesh_rebuilds.0.remove(&chunk);
 
         let mesh_start = Instant::now();
@@ -2758,6 +2726,18 @@ fn chunk_distance_squared(chunk: ChunkPos, center: ChunkPos) -> i64 {
     let dx = i64::from(chunk.x) - i64::from(center.x);
     let dz = i64::from(chunk.z) - i64::from(center.z);
     (dx * dx) + (dz * dz)
+}
+
+fn deferred_streaming_mesh_rebuild_limit(chunks: &[ChunkPos], center: ChunkPos) -> usize {
+    let Some(nearest) = chunks.first().copied() else {
+        return 0;
+    };
+
+    if chunk_distance_squared(nearest, center) <= VERY_NEAR_STREAMING_MESH_DISTANCE_SQ {
+        MAX_VERY_NEAR_STREAMING_MESH_REBUILDS_PER_FRAME
+    } else {
+        1
+    }
 }
 
 fn env_i32(name: &str, default: i32) -> i32 {
@@ -4080,26 +4060,13 @@ fn handle_creative_inventory_input(
         creative_ui.tab = creative_ui.tab.previous();
     }
 
-    let shift_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let dynamic_group_count = creative_tab_dynamic_group_count(creative_ui.tab);
     let page_up_pressed = keys.just_pressed(KeyCode::PageUp) || keys.just_pressed(KeyCode::ArrowUp);
     let page_down_pressed =
         keys.just_pressed(KeyCode::PageDown) || keys.just_pressed(KeyCode::ArrowDown);
 
     if page_up_pressed {
-        if creative_ui.tab == CreativeInventoryTab::Brewing
-            && dynamic_group_count > 0
-            && !shift_held
-            && keys.just_pressed(KeyCode::PageUp)
-        {
-            let next_dynamic_group =
-                creative_next_dynamic_group(creative_ui.tab, creative_ui.active_dynamic_group());
-            creative_ui.set_active_dynamic_group(next_dynamic_group);
-            creative_ui.set_active_page(0);
-        } else {
-            let previous_page = creative_ui.active_page().saturating_sub(1);
-            creative_ui.set_active_page(previous_page);
-        }
+        let previous_page = creative_ui.active_page().saturating_sub(1);
+        creative_ui.set_active_page(previous_page);
     }
 
     let page_count = creative_tab_entry_page_count_for_dynamic_group(
@@ -4796,7 +4763,7 @@ fn rebuild_chunk_mesh_entity(
         return;
     };
 
-    let (opaque_mesh, fluid_mesh) = split_terrain_mesh_by_alpha(mesh_data);
+    let (opaque_mesh, fluid_mesh) = split_terrain_mesh_by_render_layer(mesh_data);
     let has_opaque = !opaque_mesh.indices.is_empty();
     let has_fluid = !fluid_mesh.indices.is_empty();
 
@@ -4887,24 +4854,28 @@ fn despawn_chunk_mesh_entry(
     meshes.remove(entry.fluid_mesh.id());
 }
 
-fn split_terrain_mesh_by_alpha(mesh_data: TerrainMeshData) -> (TerrainMeshData, TerrainMeshData) {
+fn split_terrain_mesh_by_render_layer(
+    mesh_data: TerrainMeshData,
+) -> (TerrainMeshData, TerrainMeshData) {
     let face_count = mesh_data.positions.len() / 4;
     let mut opaque = TerrainMeshData::default();
     let mut fluid = TerrainMeshData::default();
 
     for face_index in 0..face_count {
         let vertex_start = face_index * 4;
-        let alpha = mesh_data
-            .colors
-            .get(vertex_start)
-            .map(|color| color[3])
-            .unwrap_or(1.0);
-        let is_fluid_face = mesh_data
-            .face_is_fluid
+        let render_layer = mesh_data
+            .face_render_layer
             .get(face_index)
             .copied()
-            .unwrap_or(alpha < 0.999);
-        let target = if is_fluid_face {
+            .unwrap_or_else(|| {
+                let alpha = mesh_data
+                    .colors
+                    .get(vertex_start)
+                    .map(|color| color[3])
+                    .unwrap_or(1.0);
+                if alpha < 0.999 { 1 } else { 0 }
+            });
+        let target = if render_layer == 1 {
             &mut fluid
         } else {
             &mut opaque
@@ -4926,7 +4897,7 @@ fn split_terrain_mesh_by_alpha(mesh_data: TerrainMeshData) -> (TerrainMeshData, 
         target
             .indices
             .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-        target.face_is_fluid.push(is_fluid_face);
+        target.face_render_layer.push(render_layer);
     }
 
     (opaque, fluid)
@@ -9853,7 +9824,7 @@ fn build_block_materials(
                 base_color: Color::WHITE,
                 base_color_texture: Some(texture.clone()),
                 unlit: true,
-                alpha_mode: AlphaMode::Opaque,
+                alpha_mode: AlphaMode::Mask(0.5),
                 cull_mode: None,
                 ..default()
             },
@@ -9873,7 +9844,7 @@ fn build_block_materials(
         StandardMaterial {
             base_color: Color::srgb(0.42, 0.64, 0.33),
             unlit: true,
-            alpha_mode: AlphaMode::Opaque,
+            alpha_mode: AlphaMode::Mask(0.5),
             cull_mode: None,
             ..default()
         },

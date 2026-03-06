@@ -73,7 +73,7 @@ impl CreativeInventoryTab {
 pub fn creative_tab_title(tab: CreativeInventoryTab) -> &'static str {
     match tab {
         CreativeInventoryTab::BuildingBlocks => "Structures",
-        CreativeInventoryTab::Decorations => "Decorations",
+        CreativeInventoryTab::Decorations => "Decoration",
         CreativeInventoryTab::RedstoneAndTransport => "Redstone + Transport",
         CreativeInventoryTab::Materials => "Materials",
         CreativeInventoryTab::Food => "Food",
@@ -420,13 +420,14 @@ const FIREWORK_PRESET_AUX_ORDER: &[u16] = &[1, 2, 3, 4, 5];
 pub fn creative_tab_items(tab: CreativeInventoryTab) -> &'static [u16] {
     match tab {
         CreativeInventoryTab::BuildingBlocks => &[
-            1, 2, 3, 4, 12, 24, 41, 42, 22, 57, 133, 155, 16, 21, 56, 73, 15, 14, 129, 153, 7, 5,
-            17, 13, 45, 48, 49, 139, 82, 79, 80, 87, 88, 89, 98, 97, 110, 112, 121, 155, 96, 107,
-            324, 330, 44, 126, 53, 135, 134, 136, 67, 108, 109, 114, 128, 156,
+            1, 2, 3, 4, 12, 24, 173, 41, 42, 22, 57, 133, 155, 16, 21, 56, 73, 15, 14, 129, 153, 7,
+            5, 17, 13, 45, 48, 49, 82, 79, 80, 87, 88, 89, 85, 113, 101, 139, 98, 97, 110, 112,
+            121, 155, 96, 107, 324, 330, 44, 126, 53, 135, 134, 136, 67, 108, 109, 114, 128, 156,
+            172, 159,
         ],
         CreativeInventoryTab::Decorations => &[
             397, 19, 103, 86, 91, 6, 18, 106, 111, 50, 31, 32, 37, 38, 39, 40, 81, 78, 30, 102, 20,
-            321, 389, 323, 47, 390, 35, 171,
+            321, 389, 323, 47, 390, 170, 35, 171,
         ],
         CreativeInventoryTab::RedstoneAndTransport => &[
             66, 27, 28, 157, 65, 328, 342, 343, 408, 407, 329, 333, 23, 25, 33, 29, 46, 69, 77,
@@ -448,16 +449,16 @@ pub fn creative_tab_items(tab: CreativeInventoryTab) -> &'static [u16] {
         ],
         CreativeInventoryTab::Brewing => &[384, 370, 376, 377, 378, 382, 374, 373],
         CreativeInventoryTab::Misc => &[
-            54, 130, 58, 61, 379, 116, 120, 84, 145, 355, 325, 327, 326, 335, 380, 332, 339, 340,
-            368, 381, 421, 399, 383, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2267, 2263, 2264,
-            2265, 2266, 401,
+            54, 130, 58, 61, 379, 116, 138, 120, 84, 145, 355, 325, 327, 326, 335, 380, 332, 339,
+            340, 368, 381, 421, 399, 383, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2267, 2263,
+            2264, 2265, 2266, 401,
         ],
     }
 }
 
 pub fn creative_tab_dynamic_group_count(tab: CreativeInventoryTab) -> usize {
     match tab {
-        CreativeInventoryTab::Brewing => 5,
+        CreativeInventoryTab::Brewing => 0,
         _ => 0,
     }
 }
@@ -473,20 +474,9 @@ pub fn creative_next_dynamic_group(tab: CreativeInventoryTab, dynamic_group: usi
 
 pub fn creative_tab_items_for_dynamic_group(
     tab: CreativeInventoryTab,
-    dynamic_group: usize,
+    _dynamic_group: usize,
 ) -> &'static [u16] {
-    if tab != CreativeInventoryTab::Brewing {
-        return creative_tab_items(tab);
-    }
-
-    match dynamic_group % 5 {
-        0 => &[384, 370, 376, 377, 378, 382, 374, 373],
-        1 => &[373],
-        2 => &[373],
-        3 => &[373],
-        4 => &[373],
-        _ => &[384, 370, 376, 377, 378, 382, 374, 373],
-    }
+    creative_tab_items(tab)
 }
 
 fn expand_entries_with_aux(tab: CreativeInventoryTab, item_ids: &[u16]) -> Vec<CreativeItemEntry> {
@@ -531,6 +521,11 @@ fn expand_entries_with_aux(tab: CreativeInventoryTab, item_ids: &[u16]) -> Vec<C
             (CreativeInventoryTab::BuildingBlocks, 44) => {
                 for aux in STONE_SLAB_AUX_ORDER {
                     entries.push(creative_entry(44, *aux));
+                }
+            }
+            (CreativeInventoryTab::BuildingBlocks, 159) => {
+                for aux in WOOL_AUX_ORDER {
+                    entries.push(creative_entry(159, *aux));
                 }
             }
             (CreativeInventoryTab::Decorations, 397) => {
@@ -604,11 +599,7 @@ pub fn creative_tab_entry_page_count_for_dynamic_group(
     dynamic_group: usize,
 ) -> usize {
     let item_count = creative_tab_entries_for_dynamic_group(tab, dynamic_group).len();
-    if item_count == 0 {
-        1
-    } else {
-        item_count.div_ceil(CREATIVE_SELECTOR_SLOTS)
-    }
+    creative_page_count_for_items(item_count)
 }
 
 pub fn creative_selector_entries_page_for_dynamic_group(
@@ -618,7 +609,7 @@ pub fn creative_selector_entries_page_for_dynamic_group(
 ) -> [Option<CreativeItemEntry>; CREATIVE_SELECTOR_SLOTS] {
     let mut selector = [None; CREATIVE_SELECTOR_SLOTS];
     let entries = creative_tab_entries_for_dynamic_group(tab, dynamic_group);
-    let start = page.saturating_mul(CREATIVE_SELECTOR_SLOTS);
+    let start = creative_page_start_index(page);
 
     for (slot, entry) in selector.iter_mut().zip(entries.iter().skip(start)) {
         *slot = Some(*entry);
@@ -636,11 +627,7 @@ pub fn creative_tab_page_count_for_dynamic_group(
     dynamic_group: usize,
 ) -> usize {
     let item_count = creative_tab_entries_for_dynamic_group(tab, dynamic_group).len();
-    if item_count == 0 {
-        1
-    } else {
-        item_count.div_ceil(CREATIVE_SELECTOR_SLOTS)
-    }
+    creative_page_count_for_items(item_count)
 }
 
 pub fn creative_selector_items_page(
@@ -657,7 +644,7 @@ pub fn creative_selector_items_page_for_dynamic_group(
 ) -> [Option<u16>; CREATIVE_SELECTOR_SLOTS] {
     let mut selector = [None; CREATIVE_SELECTOR_SLOTS];
     let entries = creative_tab_entries_for_dynamic_group(tab, dynamic_group);
-    let start = page.saturating_mul(CREATIVE_SELECTOR_SLOTS);
+    let start = creative_page_start_index(page);
 
     for (slot, entry) in selector.iter_mut().zip(entries.iter().skip(start)) {
         *slot = Some(entry.item_id);
@@ -668,6 +655,21 @@ pub fn creative_selector_items_page_for_dynamic_group(
 
 fn creative_entry_cache() -> &'static CreativeEntryCache {
     CREATIVE_ENTRY_CACHE.get_or_init(build_creative_entry_cache)
+}
+
+fn creative_page_count_for_items(item_count: usize) -> usize {
+    if item_count == 0 {
+        return 1;
+    }
+
+    let total_rows = item_count.div_ceil(CREATIVE_SELECTOR_COLUMNS);
+    total_rows
+        .saturating_sub(CREATIVE_SELECTOR_ROWS)
+        .saturating_add(1)
+}
+
+fn creative_page_start_index(page: usize) -> usize {
+    page.saturating_mul(CREATIVE_SELECTOR_COLUMNS)
 }
 
 fn build_creative_entry_cache() -> CreativeEntryCache {
@@ -697,19 +699,22 @@ fn normalize_dynamic_group(tab: CreativeInventoryTab, dynamic_group: usize) -> u
 
 fn build_entries_for_dynamic_group(
     tab: CreativeInventoryTab,
-    dynamic_group: usize,
+    _dynamic_group: usize,
 ) -> Vec<CreativeItemEntry> {
     if tab == CreativeInventoryTab::Brewing {
-        let source = match dynamic_group % 5 {
-            0 => BREWING_GROUP_ITEMS,
-            1 => BREWING_GROUP_POTIONS_LEVEL2_EXTENDED,
-            2 => BREWING_GROUP_POTIONS_EXTENDED,
-            3 => BREWING_GROUP_POTIONS_LEVEL2,
-            4 => BREWING_GROUP_POTIONS_BASIC,
-            _ => BREWING_GROUP_ITEMS,
-        };
-
-        return source.iter().rev().copied().collect();
+        let mut entries = Vec::with_capacity(
+            BREWING_GROUP_ITEMS.len()
+                + BREWING_GROUP_POTIONS_LEVEL2_EXTENDED.len()
+                + BREWING_GROUP_POTIONS_EXTENDED.len()
+                + BREWING_GROUP_POTIONS_LEVEL2.len()
+                + BREWING_GROUP_POTIONS_BASIC.len(),
+        );
+        entries.extend_from_slice(BREWING_GROUP_ITEMS);
+        entries.extend_from_slice(BREWING_GROUP_POTIONS_LEVEL2_EXTENDED);
+        entries.extend_from_slice(BREWING_GROUP_POTIONS_EXTENDED);
+        entries.extend_from_slice(BREWING_GROUP_POTIONS_LEVEL2);
+        entries.extend_from_slice(BREWING_GROUP_POTIONS_BASIC);
+        return entries;
     }
 
     expand_entries_with_aux(tab, creative_tab_items(tab))
